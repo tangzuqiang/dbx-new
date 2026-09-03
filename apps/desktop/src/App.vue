@@ -1,0 +1,3603 @@
+<script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from "vue";
+import { useI18n } from "vue-i18n";
+import { ChevronsRight, FileText } from "@lucide/vue";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import AppToolbar from "@/components/layout/AppToolbar.vue";
+import AppTabBar from "@/components/layout/AppTabBar.vue";
+import InstanceWorkspaceTabs from "@/components/layout/InstanceWorkspaceTabs.vue";
+import AppSidebar from "@/components/layout/AppSidebar.vue";
+import EditorToolbar from "@/components/layout/EditorToolbar.vue";
+import ContentArea from "@/components/layout/ContentArea.vue";
+import AppDialogs from "@/components/layout/AppDialogs.vue";
+import WelcomeScreen from "@/components/layout/WelcomeScreen.vue";
+import type { ConfigTab } from "@/components/connection/ConnectionDialog.vue";
+import { useConnectionStore } from "@/stores/connectionStore";
+import { useQueryStore } from "@/stores/queryStore";
+import { useSqlExecutionDangerStore } from "@/stores/sqlExecutionDangerStore";
+import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
+import { enforceRightSidebarPanelExclusivity, RIGHT_SIDEBAR_PANEL_IDS, transitionRightSidebarPanels, useSettingsStore, type RightSidebarPanelId, type RightSidebarPanelState } from "@/stores/settingsStore";
+import { useSavedSqlStore } from "@/stores/savedSqlStore";
+import { usePromptTemplateStore } from "@/stores/promptTemplateStore";
+import { useToast } from "@/composables/useToast";
+import { useTheme } from "@/composables/useTheme";
+import { useAppUpdater } from "@/composables/useAppUpdater";
+import { useMcpUpdateBadge } from "@/composables/useMcpUpdateBadge";
+import { useExportTracker } from "@/composables/useExportTracker";
+import { useFileDrop } from "@/composables/useFileDrop";
+import { usePanelResize } from "@/composables/usePanelResize";
+import { useDatabaseOptions } from "@/composables/useDatabaseOptions";
+import { useSqlExecution } from "@/composables/useSqlExecution";
+import MultiDbExecuteDialog from "@/components/editor/MultiDbExecuteDialog.vue";
+import { useDialogSources } from "@/composables/useDialogSources";
+import { useNavigationTargets } from "@/composables/useNavigationTargets";
+import { useDataGridActions } from "@/composables/useDataGridActions";
+import { useTauriEvents } from "@/composables/useTauriEvents";
+import { useCloseActionPrompt, type AppCloseAction, type AppCloseRequestOptions } from "@/composables/useCloseActionPrompt";
+import { disposeAllSqlServerActivityTraces } from "@/lib/sqlserver/sqlServerActivityTraceRuntime";
+import { useVisibilityChange } from "@/composables/useVisibilityChange";
+import { useExternalSqlFileChanges } from "@/composables/useExternalSqlFileChanges";
+import { useWebDavAutoUpload } from "@/composables/useWebDavAutoUpload";
+import { useScheduledDatabaseBackups } from "@/composables/useScheduledDatabaseBackups";
+import { shouldDrawDesktopWindowFrame } from "@/composables/useWindowControls";
+import { createOpenTabsRestorationBarrier, initializeDesktopOpenTabs, initializeOpenTabs, type OpenTabsRestorationBarrier } from "@/lib/app/openTabsStartup";
+import { finishAppCloseWithRequiredPersist } from "@/lib/app/appClosePersistence";
+import { useSaveSqlFolderSelection } from "@/composables/useSaveSqlFolderSelection";
+import "@/i18n";
+import { translateBackendError } from "@/i18n/backend-errors";
+import * as api from "@/lib/backend/api";
+import { connectionRedactedNameLabel } from "@/lib/connection/connectionPresentation";
+import { quickConnectionOpenTarget } from "@/lib/connection/connectionOpenTarget";
+import { parseRecentConnectionIds, rankRecentConnections, RECENT_CONNECTION_IDS_STORAGE_KEY, recordRecentConnection } from "@/lib/connection/recentConnections";
+import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
+import { normalizeSqliteNamespace } from "@/lib/database/sqliteNamespace";
+import { findTreeNodeById, resolveNewQueryTarget, resolveNewQueryInitialSql } from "@/lib/sql/newQueryContext";
+import { isSqlObjectNavigationRoutineType, normalizeOracleNavigationTarget, sqlObjectNavigationSourceKind, sqlObjectNavigationSourceName, sqlObjectNavigationSourceSchema, sqlObjectNavigationTableType, type SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
+import { buildEditableObjectSource, buildExecutableObjectSourceStatements, executeObjectSourceSave } from "@/lib/table/objectSourceEditor";
+import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
+import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitialization";
+import { resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
+import { resolveExecutableSql, resolveExecutableSqlWithBackend, type SqlExecutionSnapshot } from "@/lib/sql/sqlExecutionTarget";
+import { uuid } from "@/lib/common/utils";
+import { isMacOS, isWindows } from "@/lib/backend/platform";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
+import { openQueryResultArchiveFile } from "@/lib/query/queryResultArchiveFile";
+import { rememberExternalSqlFileTarget, resolveExternalSqlFileTarget, unassociatedExternalSqlFileTarget } from "@/lib/sql/externalSqlFileTarget";
+import { externalSqlFileOpenErrorMessage, isSqlFilePath, readBrowserSqlFile, sqlFileTitleFromPath } from "@/lib/sql/sqlFileOpen";
+import type { ConnectionConfig, DatabaseType, ObjectSourceKind, QueryTab, TreeNode } from "@/types/database";
+import { parseConnectionDeepLink, type ConnectionDeepLinkDraft } from "@/lib/connection/connectionDeepLink";
+import { parseAiConfigDeepLink, type AiConfigDeepLinkDraft } from "@/lib/ai/aiConfigDeepLink";
+import { activeDesktopAiRuns, blockingDesktopAiRunsForQuit } from "@/lib/ai/desktopAiRunRegistry";
+import {
+  isBrowserReloadShortcut,
+  isCloseOtherTabsShortcut,
+  isCloseTabShortcut,
+  isExecuteSqlInNewResultTabShortcut,
+  isExecuteSqlShortcut,
+  isFocusSearchShortcut,
+  isGoToColumnShortcut,
+  isModRShortcut,
+  handleTabHistoryNavigationShortcut,
+  isNewQueryShortcut,
+  isObjectSourceSaveShortcutTarget,
+  isOpenSettingsShortcut,
+  isQuickOpenShortcut,
+  isResetZoomShortcut,
+  isRefreshDataShortcut,
+  isSaveShortcut,
+  isSendSelectionToAiShortcut,
+  isSwitchToNextTabShortcut,
+  isSwitchToPreviousTabShortcut,
+  isToggleResultsPaneShortcut,
+  isToggleSidebarShortcut,
+  isToggleZenModeShortcut,
+  isZoomInShortcut,
+  isZoomOutShortcut,
+  switchToTabIndexFromShortcut,
+  tabSwitcherDirectionFromShortcut,
+} from "@/lib/editor/keyboardShortcuts";
+import { isPreviewTab } from "@/lib/tabs/tabPresentation";
+import { createTabNavigationHistory, moveInTabNavigationHistory, recordTabVisit } from "@/lib/tabs/tabNavigationHistory";
+import { initialTabSwitcherSelection, moveTabSwitcherSelection, tabSwitcherOrder } from "@/lib/tabs/tabSwitcher";
+import { createTabSwitcherKeyboardController } from "@/lib/tabs/tabSwitcherKeyboard";
+import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
+import { supportsSqlFileExecution } from "@/lib/database/databaseCapabilities";
+import { classifyAiSqlExecution } from "@/lib/ai/aiSqlExecutionPolicy";
+import { buildAppendedEditorSql, buildDeduplicatedAppendedEditorSql } from "@/lib/ai/aiSqlAppend";
+import { assessProductionSql } from "@/lib/database/productionSafety";
+import { normalizeSqlExecutionTarget, sqlExecutionTargetCapabilities } from "@/lib/database/sqlExecutionTargetCapabilities";
+import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
+import { buildHistoryAiAnalysisPrompt } from "@/lib/history/historyAiAnalysis";
+import { countAvailableAgentDriverUpdates } from "@/lib/connection/agentDriverUpdateBadge";
+import type { DriverStoreFocus } from "@/lib/connection/agentDriverInstallHint";
+import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
+import { appendUniqueWorkspace } from "@/lib/workspace/instanceWorkspace";
+import { apiUrl, webPath } from "@/lib/common/webPath";
+import { shouldBlockAppNativeSelectAll } from "@/lib/common/clipboard";
+import { APP_FONT_SANS_CSS_VAR, DATA_GRID_FONT_FAMILY_CSS_VAR, DEFAULT_DATA_GRID_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY } from "@/lib/app/appFonts";
+import { DATA_GRID_TYPE_COLOR_KEYS, dataGridTypeColorCssVar, resolveActiveDataGridTypeColors } from "@/lib/dataGrid/dataGridTypeColorScheme";
+import { rankSavedSqlHistory } from "@/lib/savedSql/savedSqlHistory";
+import { savedSqlErrorMessage } from "@/lib/savedSql/savedSqlErrors";
+import { savedSqlDefaultTargetForWrite } from "@/lib/savedSql/savedSqlExecutionTarget";
+import { countActiveUpdateBlockingTasks } from "@/lib/app/appUpdateTaskGuard";
+import { initSavedSqlEditorPositions } from "@/lib/app/savedSqlEditorPosition";
+import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
+import { isSchemaAware, isSingleDatabase, usesTreeSchemaMode } from "@/lib/database/databaseFeatureSupport";
+import { codeMirrorSqlDialect, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
+import { canFormatSqlForDatabaseType, formatSqlForEditing, sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
+import { formatSqlSnapshotForSave } from "@/lib/sql/sqlFormatOnSave";
+import { detectAndFormatStructured } from "@/lib/sql/autoFormat";
+import { formatMongoShellText } from "@/lib/mongo/mongoFormatter";
+import { detectAndFormatElasticsearchRequests } from "@/lib/elasticsearch/elasticsearchFormatter";
+import { detectDatabaseFileType } from "@/lib/database/databaseFileDetection";
+import { ensureJdbcxRuntimeDrivers } from "@/lib/database/jdbcxBuiltinDriver";
+import { ensureRegisteredJdbcProductRuntimeDrivers } from "@/lib/database/jdbcProductProfiles";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { SearchableSelect } from "@/components/ui/searchable-select";
+import type { HistoryEntry } from "@/lib/backend/tauri";
+import { resolveDefaultAiSchema, type AiAction } from "@/lib/ai/ai";
+import ExternalSqlFileChangeDialog from "@/components/editor/ExternalSqlFileChangeDialog.vue";
+
+const AiAssistant = defineAsyncComponent(() => import("@/components/editor/AiAssistant.vue"));
+const QueryHistory = defineAsyncComponent(() => import("@/components/editor/QueryHistory.vue"));
+const SqlLibraryPanel = defineAsyncComponent(() => import("@/components/layout/SqlLibraryPanel.vue"));
+const SqlFilePanel = defineAsyncComponent(() => import("@/components/layout/SqlFilePanel.vue"));
+const DriverStorePage = defineAsyncComponent(() => import("@/components/config/DriverStoreDialog.vue"));
+const EditorSettingsPage = defineAsyncComponent(() => import("@/components/editor/EditorSettingsDialog.vue"));
+const UpdateDialog = defineAsyncComponent(() => import("@/components/layout/UpdateDialog.vue"));
+const CloseActionPromptDialog = defineAsyncComponent(() => import("@/components/layout/CloseActionPromptDialog.vue"));
+const AiRunsClosePromptDialog = defineAsyncComponent(() => import("@/components/layout/AiRunsClosePromptDialog.vue"));
+const LoginPage = defineAsyncComponent(() => import("@/components/auth/LoginPage.vue"));
+const QuickOpenDialog = defineAsyncComponent(() => import("@/components/quick-open/QuickOpenDialog.vue"));
+const TabSwitcherDialog = defineAsyncComponent(() => import("@/components/tabs/TabSwitcherDialog.vue"));
+const QueryEditorDdlViewDialog = defineAsyncComponent(() => import("@/components/objects/DdlViewDialog.vue"));
+const QueryEditorObjectSourceDialog = defineAsyncComponent(() => import("@/components/objects/ObjectSourceDialog.vue"));
+
+type AiAssistantHandle = {
+  triggerAction: (action: AiAction, instruction?: string) => void;
+  setPrompt: (text: string) => void;
+  addTableMention: (target: { schema?: string; table: string }) => void;
+  clearContextReferences: () => void;
+  /** Opens a conversation by id (used by the background-run toast, §9). */
+  selectConversationById: (conversationId: string) => void;
+};
+
+const { t } = useI18n();
+const connectionStore = useConnectionStore();
+const queryStore = useQueryStore();
+const settingsStore = useSettingsStore();
+const savedSqlStore = useSavedSqlStore();
+const promptTemplateStore = usePromptTemplateStore();
+const recentConnectionIds = ref<readonly string[]>(parseRecentConnectionIds(safeLocalStorageGet(RECENT_CONNECTION_IDS_STORAGE_KEY)));
+connectionStore.setBeforeConnectHandler(async (config) => {
+  await ensureJdbcxRuntimeDrivers(config, api);
+  const jdbcProductRuntimeBefore = JSON.stringify({
+    connectionString: config.connection_string ?? null,
+    driverClass: config.jdbc_driver_class ?? null,
+    driverPaths: config.jdbc_driver_paths ?? [],
+  });
+  const jdbcProductRuntime = await ensureRegisteredJdbcProductRuntimeDrivers(config, api);
+  const jdbcProductRuntimeAfter = JSON.stringify({
+    connectionString: config.connection_string ?? null,
+    driverClass: config.jdbc_driver_class ?? null,
+    driverPaths: config.jdbc_driver_paths ?? [],
+  });
+  if (jdbcProductRuntime && jdbcProductRuntimeBefore !== jdbcProductRuntimeAfter && connectionStore.getConfig(config.id)) {
+    await connectionStore.updateConnection(config);
+  }
+});
+const { message: toastMessage, visible: toastVisible, action: toastAction, toast } = useToast();
+const { isDark, themeMode, applyTheme, setThemeMode } = useTheme();
+const { activeCount: activeBackgroundTaskCount } = useExportTracker();
+const trackedUpdateTaskCount = computed(() => countActiveUpdateBlockingTasks(activeBackgroundTaskCount.value, queryStore.tabs));
+const {
+  checkingUpdates,
+  updateInfo,
+  updateCheckMessage,
+  updateCheckFailed,
+  showUpdateDialog,
+  isDownloadingUpdate,
+  downloadProgress,
+  updateDownloaded,
+  isInstallingUpdate,
+  updateReady,
+  isIgnoringUpdate,
+  activeTaskCount: activeUpdateTaskCount,
+  hasUpdateAvailable,
+  openUrl,
+  checkUpdates,
+  openLatestRelease,
+  changeUpdateDownloadSource,
+  ignoreCurrentVersion,
+  downloadUpdateInBackground,
+  cancelDownload,
+  installDownloadedUpdate,
+  restartApp,
+} = useAppUpdater({
+  getActiveTaskCount: () => trackedUpdateTaskCount.value,
+});
+const { setupFileDrop } = useFileDrop();
+
+const isDesktop = isTauriRuntime();
+const activeAiRunCount = computed(() => (isDesktop ? activeDesktopAiRuns().length : 0));
+/** Runs waiting for a write confirmation — the panel-entry badge shows these
+ *  with a higher-priority indicator (parent PRD §4 line 71 / §9). */
+const awaitingAiRunCount = computed(() => (isDesktop ? activeDesktopAiRuns().filter((run) => run.status === "awaiting_write_confirmation").length : 0));
+const { mcpUpdateAvailable, refreshMcpUpdateStatus, handleMcpStatusChanged } = useMcpUpdateBadge({
+  isDesktop,
+  updateNotificationsEnabled: () => settingsStore.editorSettings.updateNotificationsEnabled,
+});
+const drawDesktopWindowFrame = shouldDrawDesktopWindowFrame(isMacOS(), isDesktop, isWindows());
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let updateCheckTimer: ReturnType<typeof setInterval> | undefined;
+const needsAuth = ref(!isDesktop);
+const authenticated = ref(isDesktop);
+const setupRequired = ref(false);
+
+const showConnectionDialog = ref(false);
+const connectionDialogPrefill = ref<ConnectionDeepLinkDraft | null>(null);
+const connectionDialogInitialTab = ref<ConfigTab | undefined>(undefined);
+const settingsPageTabOpen = ref(false);
+const settingsInitialTab = ref("appearance");
+const settingsInitialSection = ref<string | undefined>(undefined);
+const settingsNavigationRequestId = ref(0);
+const settingsAiConfigDraft = ref<AiConfigDeepLinkDraft | null>(null);
+const settingsAiConfigRequestId = ref(0);
+const showQueryEditorDdlDialog = ref(false);
+const showQueryEditorObjectSourceDialog = ref(false);
+const driverStoreTabOpen = ref(false);
+const driverStoreActive = ref(false);
+const driverStoreActiveTab = ref<"agent" | "jdbc" | "storage" | "runtime">("agent");
+const settingsReturnSurface = ref<"query" | "driverStore" | "welcome">("welcome");
+const showDriverStore = computed(() => driverStoreTabOpen.value && driverStoreActive.value);
+const showSettingsPage = computed(() => settingsPageTabOpen.value && settingsStore.settingsPageActive);
+const showQuickOpen = ref(false);
+const showTabSwitcher = ref(false);
+const tabSwitcherIndex = ref(0);
+const agentDriverUpdateCount = ref(0);
+const showHistory = ref(false);
+const showAiPanel = ref(safeLocalStorageGet("dbx-ai-panel-open") === "true");
+const isAiPanelMaximized = ref(false);
+const isZenMode = ref(false);
+const showSqlLibraryPanel = ref(safeLocalStorageGet("dbx-sql-library-open") === "true");
+const showSqlFilePanel = ref(safeLocalStorageGet("dbx-sql-file-panel-open") === "true");
+const rightSidebarPanelRefs: Record<RightSidebarPanelId, typeof showAiPanel> = {
+  ai: showAiPanel,
+  history: showHistory,
+  sqlLibrary: showSqlLibraryPanel,
+  sqlFile: showSqlFilePanel,
+};
+const rightSidebarPanelStorageKeys: Partial<Record<RightSidebarPanelId, string>> = {
+  ai: "dbx-ai-panel-open",
+  sqlLibrary: "dbx-sql-library-open",
+  sqlFile: "dbx-sql-file-panel-open",
+};
+let lastOpenedRightSidebarPanel = RIGHT_SIDEBAR_PANEL_IDS.find((panelId) => rightSidebarPanelRefs[panelId].value);
+const sidebarOpen = ref(safeLocalStorageGet("dbx-sidebar-open") !== "false");
+const aiPanelReady = ref(false);
+const { sidebarWidth, aiPanelWidth, historyWidth, sqlLibraryWidth, sqlFilePanelWidth, startSidebarResize, startAiPanelResize, startHistoryResize, startSqlLibraryResize, startSqlFilePanelResize } = usePanelResize();
+const aiAssistantRef = ref<AiAssistantHandle | null>(null);
+const appSidebarRef = ref<InstanceType<typeof AppSidebar> | null>(null);
+const appTabBarRef = ref<InstanceType<typeof AppTabBar> | null>(null);
+const contentAreaRef = ref<InstanceType<typeof ContentArea> | null>(null);
+
+const selectedSql = ref("");
+const cursorPos = ref(0);
+const previewChangesAvailable = ref(false);
+const formatSqlRequest = ref<{ id: number; tabId: string } | null>(null);
+const compressSqlRequest = ref<{ id: number; tabId: string } | null>(null);
+const activeOutputView = ref<"result" | "summary" | "explain" | "chart" | "messages">("result");
+const newQueryContextSource = ref<"tab" | "sidebar">("tab");
+const queryEditorDdlTarget = ref<{ connectionId: string; database: string; catalog?: string; schema?: string; tableName: string; objectType?: ObjectSourceKind } | null>(null);
+const queryEditorObjectSourceTarget = ref<{
+  connectionId: string;
+  database: string;
+  schema?: string;
+  name: string;
+  objectType: ObjectSourceKind;
+  initialEditing: boolean;
+  signature?: string;
+  relationName?: string;
+} | null>(null);
+const showSaveSqlDialog = ref(false);
+const sqlLibrarySaveFeedbackId = ref(0);
+const saveSqlConfirmButtonRef = ref<HTMLElement | { $el?: HTMLElement } | null>(null);
+const sqlLibraryFlyAnimation = ref<{
+  id: number;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+} | null>(null);
+let sqlLibraryFlyAnimationTimer = 0;
+const showMultiDbExecuteDialog = ref(false);
+const multiExecuteSql = ref("");
+const multiExecuteSourceTabId = ref("");
+const saveSqlName = ref("");
+const ROOT_SAVED_SQL_FOLDER = "__root__";
+const { selection: saveSqlFolderId, pending: saveSqlFolderCreationPending, reset: resetSaveSqlFolderSelection, invalidate: invalidateSaveSqlFolderSelection, select: selectSaveSqlFolder } = useSaveSqlFolderSelection(ROOT_SAVED_SQL_FOLDER);
+const pendingSaveAndCloseTabId = ref<string | null>(null);
+const pendingPrevActiveTabId = ref<string | null>(null);
+const pendingSaveShouldCloseTab = ref(true);
+const pendingAppCloseAction = ref<AppCloseAction | null>(null);
+const pendingCloseActionChoice = ref(false);
+const showAiRunsClosePrompt = ref(false);
+const blockingAiRunCount = computed(() => (isDesktop ? blockingDesktopAiRunsForQuit().length : 0));
+let aiRunsQuitConfirmed = false;
+
+const activeTab = computed(() => queryStore.tabs.find((t) => t.id === queryStore.activeTabId));
+const openWorkspaceConnectionIds = ref<string[]>([]);
+const activeWorkspaceConnectionId = ref<string | null>(null);
+const lastActiveTabByConnection = new Map<string, string>();
+const openWorkspaceConnections = computed(() =>
+  openWorkspaceConnectionIds.value.map((id) => connectionStore.getConfig(id)).filter((connection): connection is ConnectionConfig => !!connection),
+);
+
+function activateInstanceWorkspace(connectionId: string) {
+  if (!connectionStore.getConfig(connectionId)) return;
+  openWorkspaceConnectionIds.value = appendUniqueWorkspace(openWorkspaceConnectionIds.value, connectionId);
+  activeWorkspaceConnectionId.value = connectionId;
+  connectionStore.activeConnectionId = connectionId;
+  const remembered = lastActiveTabByConnection.get(connectionId);
+  const target = (remembered && queryStore.tabs.find((tab) => tab.id === remembered && tab.connectionId === connectionId)) || queryStore.tabs.find((tab) => tab.connectionId === connectionId);
+  queryStore.activeTabId = target?.id ?? null;
+  activateQuerySurface();
+}
+
+function closeInstanceWorkspace(connectionId: string) {
+  const index = openWorkspaceConnectionIds.value.indexOf(connectionId);
+  if (index < 0) return;
+  const remaining = openWorkspaceConnectionIds.value.filter((id) => id !== connectionId);
+  const nextConnectionId = remaining[Math.min(index, remaining.length - 1)] ?? null;
+  const tabIds = queryStore.tabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.id);
+  const finish = () => {
+    openWorkspaceConnectionIds.value = remaining;
+    lastActiveTabByConnection.delete(connectionId);
+    if (activeWorkspaceConnectionId.value === connectionId) {
+      if (nextConnectionId) activateInstanceWorkspace(nextConnectionId);
+      else {
+        activeWorkspaceConnectionId.value = null;
+        queryStore.activeTabId = null;
+      }
+    }
+  };
+  if (tabIds.length) queryStore.closeTabsByIds(tabIds, null, finish);
+  else finish();
+}
+const tabNavigationHistory = ref(createTabNavigationHistory());
+let pendingTabHistoryNavigationId: string | null = null;
+
+watch(
+  () => activeTab.value?.mode,
+  (mode) => {
+    if (mode !== "data") isZenMode.value = false;
+  },
+);
+
+function toggleZenMode() {
+  if (activeTab.value?.mode !== "data") return;
+  isZenMode.value = !isZenMode.value;
+}
+
+const externalSqlFileChanges = useExternalSqlFileChanges({
+  activeTab,
+  recreateFile: async (tab) => {
+    const result = await writeExternalSqlTab(tab, { expectedMissing: true });
+    if (result === "retry") toast(t("externalSqlFile.changedAgain"), 5000);
+    return result === "saved";
+  },
+  saveAsFile: (tab) => saveExternalSqlTabAs(tab),
+  closeTab: (tab) => queryStore.closeTab(tab.id),
+  reportError: (message) => toast(message, 5000),
+});
+const externalSqlFilePrompt = externalSqlFileChanges.pendingPrompt;
+
+const activeConnection = computed(() => {
+  const tab = activeTab.value;
+  return tab ? connectionStore.getConfig(tab.connectionId) : undefined;
+});
+
+// Oracle manual-mode indicator derived from the RESOLVED database type (an
+// Oracle connection uses the agent runtime but reports db_type "oracle"), so
+// the toolbar's Commit/Rollback visibility can apply the Oracle dirty-state rule
+// without inferring Oracle from the raw transport type.
+const isOracleManualTransaction = computed(() => effectiveDatabaseTypeForConnection(activeConnection.value) === "oracle" && (activeTab.value?.autoCommit ?? true) === false);
+
+function updateAgentDriverUpdateCount(count: number) {
+  if (!settingsStore.editorSettings.updateNotificationsEnabled) {
+    agentDriverUpdateCount.value = 0;
+    return;
+  }
+  agentDriverUpdateCount.value = count;
+}
+
+async function refreshAgentDriverUpdateCount() {
+  if (!isDesktop || !settingsStore.editorSettings.updateNotificationsEnabled) return;
+  try {
+    const drivers = await api.listInstalledAgents();
+    if (!settingsStore.editorSettings.updateNotificationsEnabled) return;
+    updateAgentDriverUpdateCount(countAvailableAgentDriverUpdates(drivers));
+  } catch {
+    // Driver update availability is only a badge hint; keep the existing count if the registry cannot be reached.
+  }
+}
+
+function restoreHistorySql(sql: string, entry: HistoryEntry) {
+  const tab = activeTab.value;
+  if (tab?.mode === "query") {
+    queryStore.updateSql(tab.id, sql);
+    return;
+  }
+
+  const target = resolveHistorySqlRestoreTarget({
+    entry,
+    activeTab: tab,
+    firstConnectionId: connectionStore.connections[0]?.id,
+    getConfig: (connectionId) => connectionStore.getConfig(connectionId),
+  });
+  if (!target) return;
+  const tabId = queryStore.createTab(target.connectionId, target.database, t("tabs.sql"), "query", target.schema);
+  queryStore.updateSql(tabId, sql);
+}
+
+const executableSql = computed(() => {
+  const tab = activeTab.value;
+  return tab
+    ? resolveExecutableSql(tab.sql, selectedSql.value, {
+        mode: settingsStore.editorSettings.executeMode,
+        cursorPos: cursorPos.value,
+      })
+    : "";
+});
+
+async function resolveActiveExecutableSql(snapshot?: SqlExecutionSnapshot) {
+  const tab = activeTab.value;
+  return tab
+    ? await resolveExecutableSqlWithBackend(snapshot?.fullSql ?? tab.sql, snapshot?.selectedSql ?? selectedSql.value, {
+        mode: settingsStore.editorSettings.executeMode,
+        cursorPos: snapshot?.cursorPos ?? cursorPos.value,
+        databaseType: activeConnection.value?.db_type,
+      })
+    : "";
+}
+
+const blockDangerousRedisCommands = ref(true);
+const databaseRequiredSignal = ref(0);
+const databaseRequiredTabId = ref<string | null>(null);
+const pendingToolbarExecutionSnapshot = ref<SqlExecutionSnapshot>();
+const sqlExecutionDangerStore = useSqlExecutionDangerStore();
+const productionSafetyStore = useProductionSafetyStore();
+
+function promptActiveDatabaseSelection() {
+  const tab = activeTab.value;
+  if (!tab) return;
+  databaseRequiredTabId.value = tab.id;
+  databaseRequiredSignal.value += 1;
+  toast(t("editor.selectDatabaseRequired"), 2500);
+}
+
+const {
+  dangerSql,
+  pendingDangerSql,
+  showDangerDialog,
+  suppressDangerConfirm,
+  tryExecute,
+  tryExecuteInNewResultTab,
+  doExecute,
+  cancelActiveExecution,
+  tryExplain,
+  onDangerConfirm,
+  showSqlParameterDialog,
+  sqlParameterSourceSql,
+  sqlParameterNames,
+  sqlParameterDatabaseType,
+  sqlParameterEnabledSyntaxes,
+  onSqlParametersConfirm,
+  prepareMultiExecute,
+  executeTargetSql,
+  explainMode,
+} = useSqlExecution({
+  activeTab,
+  activeConnection,
+  executableSql,
+  resolveExecutableSql: resolveActiveExecutableSql,
+  activeOutputView,
+  blockDangerousRedisCommands,
+  onMissingDatabase: promptActiveDatabaseSelection,
+  requestDangerConfirmation: (request) => sqlExecutionDangerStore.requestConfirmation(request),
+  onExecutionStarted: (editorViewportRequestId) => contentAreaRef.value?.acceptQueryEditorExecutionViewport(editorViewportRequestId),
+  onExecutionCancelled: (editorViewportRequestId) => contentAreaRef.value?.cancelQueryEditorExecutionViewport(editorViewportRequestId),
+});
+
+function captureActiveEditorExecutionSnapshot() {
+  pendingToolbarExecutionSnapshot.value = contentAreaRef.value?.captureQueryEditorExecutionSnapshot?.();
+}
+
+function requestActiveEditorExecute(source?: "pointer" | "keyboard") {
+  const snapshot = pendingToolbarExecutionSnapshot.value;
+  pendingToolbarExecutionSnapshot.value = undefined;
+  if (source === "pointer") {
+    if (snapshot) {
+      void tryExecute(snapshot);
+      return;
+    }
+  }
+  if (contentAreaRef.value?.requestQueryEditorExecute?.()) return;
+  void tryExecute();
+}
+
+function requestActiveEditorExecuteInNewResultTab() {
+  if (contentAreaRef.value?.requestQueryEditorExecuteInNewResultTab?.()) return;
+  void tryExecuteInNewResultTab();
+}
+
+function requestActiveEditorPreviewChanges() {
+  void contentAreaRef.value?.requestQueryEditorPreviewChanges?.();
+}
+
+const multiExecuteDatabaseType = ref<DatabaseType>();
+const multiExecuteInitialTargets = ref<Array<{ connectionId: string; catalog?: string; database: string; schema?: string }>>([]);
+const multiExecuteLaunchId = ref(0);
+// Launch-time input only. MultiDbExecuteDialog copies this into its immutable
+// batch context before the first target starts; execution never reads this ref.
+const multiExecuteSourceOffset = ref<number>();
+
+function multiExecuteTargetLabel(target: { connectionId: string; catalog?: string; database: string; schema?: string }): string {
+  const connection = connectionStore.getConfig(target.connectionId);
+  return [connection?.name || target.connectionId, target.catalog, target.database, target.schema].filter((value) => value !== undefined && value !== "").join(" / ");
+}
+
+async function executeMultiDbTarget(input: { target: { connectionId: string; catalog?: string; database: string; schema?: string }; sourceTabId: string; sql: string; scopeId: string; context: { sourceOffset?: number }; isCancellationRequested: () => boolean }) {
+  const tab = queryStore.tabs.find((candidate) => candidate.id === input.sourceTabId);
+  const connection = connectionStore.getConfig(input.target.connectionId);
+  if (!tab || !connection) return { status: "failed" as const, errorMessage: t("multiDbExecute.targetMissingConnection") };
+  return executeTargetSql({
+    tab,
+    connection,
+    sql: input.sql,
+    executionTarget: input.target,
+    resultRun: {
+      batchId: input.scopeId,
+      title: multiExecuteTargetLabel(input.target),
+      target: input.target,
+    },
+    sourceOffset: input.context.sourceOffset,
+    blockDangerousRedisCommands: blockDangerousRedisCommands.value,
+    targetLabel: multiExecuteTargetLabel(input.target),
+    scopeId: input.scopeId,
+    isCancellationRequested: input.isCancellationRequested,
+    targetContext: sqlExecutionTargetCapabilities(connection)?.provider.toExecutionContext(input.target, connection),
+  });
+}
+
+async function cancelMultiDbTarget(_sourceTabId: string, scopeId?: string): Promise<void> {
+  if (scopeId) await queryStore.cancelMultiDbExecutionScope(scopeId);
+}
+
+function cancelPendingMultiDbTarget(scopeId: string): void {
+  sqlExecutionDangerStore.cancelScope(scopeId);
+  productionSafetyStore.cancelScope(scopeId);
+}
+
+async function requestMultiDbExecute() {
+  const tab = activeTab.value;
+  if (!tab || !activeConnection.value || showMultiDbExecuteDialog.value) return;
+  const sourceTabId = tab.id;
+  const sourceConnection = connectionStore.getConfig(tab.connectionId) ?? activeConnection.value;
+  const sourceTarget = normalizeSqlExecutionTarget(sourceConnection, {
+    connectionId: tab.connectionId,
+    ...(tab.catalog ? { catalog: tab.catalog } : {}),
+    database: tab.database,
+    ...(tab.schema ? { schema: tab.schema } : {}),
+  });
+  await prepareMultiExecute(async (sql, sourceOffset) => {
+    multiExecuteSql.value = sql;
+    multiExecuteSourceOffset.value = sourceOffset;
+    multiExecuteLaunchId.value += 1;
+    multiExecuteSourceTabId.value = sourceTabId;
+    multiExecuteDatabaseType.value = effectiveDatabaseTypeForConnection(sourceConnection);
+    multiExecuteInitialTargets.value = [sourceTarget];
+    showMultiDbExecuteDialog.value = true;
+  });
+}
+
+const dialogs = useDialogSources();
+const { getDatabaseOptions } = useDatabaseOptions();
+const { openLineageTarget, openDatabaseSearchTarget, openDiagramTarget, openObjectBrowserTableTarget, onStructureEditorSaved, openTableTarget } = useNavigationTargets(dialogs);
+const { onExecuteSql, onReloadData, onPaginate, onSort } = useDataGridActions(activeTab);
+const { setupTauriListeners, cleanupTauriListeners } = useTauriEvents({
+  openTableTarget,
+  openSqlFilePath,
+  openDbFilePath,
+  openConnectionDeepLink,
+  openAiConfigDeepLink,
+});
+const { showCloseActionPrompt, chooseQuit, chooseMinimize, cancelCloseActionPrompt, performCloseAction, setupCloseActionPromptListener, cleanupCloseActionPromptListener } = useCloseActionPrompt({ requestClose: requestAppClose });
+useVisibilityChange();
+useWebDavAutoUpload();
+useScheduledDatabaseBackups({ scheduler: true });
+
+const appVersion = ref("");
+const isClassicLayout = computed(() => settingsStore.editorSettings.appLayout === "classic");
+const isVerticalTabPlacement = computed(() => settingsStore.editorSettings.tabPlacement === "left" || settingsStore.editorSettings.tabPlacement === "right");
+const tabWorkspaceLayoutClass = computed(() => {
+  if (settingsStore.editorSettings.tabPlacement === "bottom") return "flex-col-reverse";
+  if (settingsStore.editorSettings.tabPlacement === "right") return "flex-row-reverse";
+  return isVerticalTabPlacement.value ? "flex-row" : "flex-col";
+});
+const updateNotificationsEnabled = computed(() => settingsStore.editorSettings.updateNotificationsEnabled);
+
+function openSettings(initialTab = "appearance", initialSection?: string) {
+  settingsInitialTab.value = initialTab;
+  settingsInitialSection.value = initialSection;
+  settingsNavigationRequestId.value += 1;
+  if (!settingsStore.settingsPageActive) {
+    settingsReturnSurface.value = showDriverStore.value ? "driverStore" : activeTab.value ? "query" : "welcome";
+  }
+  activateSettingsPage();
+}
+
+type MainContentSurface = "query" | "settings" | "driverStore";
+
+function activateMainContentSurface(surface: MainContentSurface) {
+  settingsStore.settingsPageActive = surface === "settings";
+  driverStoreActive.value = surface === "driverStore";
+}
+
+watch(
+  () => settingsStore.settingsNavigationRequest,
+  (request) => {
+    if (!request) return;
+    openSettings(request.tab, request.section);
+    settingsStore.clearSettingsNavigationRequest(request.id);
+  },
+);
+
+function activateSettingsPage() {
+  settingsPageTabOpen.value = true;
+  activateMainContentSurface("settings");
+}
+
+function activateQuerySurface() {
+  activateMainContentSurface("query");
+}
+
+function closeSettingsPage() {
+  settingsPageTabOpen.value = false;
+  if (settingsReturnSurface.value === "driverStore" && driverStoreTabOpen.value) {
+    activateMainContentSurface("driverStore");
+    return;
+  }
+  activateMainContentSurface("query");
+}
+
+const driverStoreFocus = ref<DriverStoreFocus | null>(null);
+
+function openDriverStorePage(target?: "agent" | "jdbc" | "storage" | "runtime" | DriverStoreFocus | null) {
+  if (typeof target === "string") {
+    driverStoreActiveTab.value = target;
+    driverStoreFocus.value = null;
+  } else if (target && target.target === "tab") {
+    driverStoreActiveTab.value = target.tab;
+    driverStoreFocus.value = null;
+  } else {
+    driverStoreFocus.value = target ?? null;
+  }
+  driverStoreTabOpen.value = true;
+  activateMainContentSurface("driverStore");
+}
+
+function closeDriverStorePage() {
+  driverStoreTabOpen.value = false;
+  activateMainContentSurface("query");
+  driverStoreActiveTab.value = "agent";
+  driverStoreFocus.value = null;
+}
+const toolbarAgentDriverUpdateCount = computed(() => (updateNotificationsEnabled.value ? agentDriverUpdateCount.value : 0));
+const toolbarHasUpdateAvailable = computed(() => updateNotificationsEnabled.value && hasUpdateAvailable.value);
+const toolbarMcpUpdateAvailable = computed(() => updateNotificationsEnabled.value && mcpUpdateAvailable.value);
+const hasSqlFileConnections = computed(() => connectionStore.connections.some((c) => supportsSqlFileExecution(c.db_type)));
+const queryEditorDdlDatabaseType = computed(() => {
+  if (!queryEditorDdlTarget.value?.connectionId) return undefined;
+  return effectiveDatabaseTypeForConnection(connectionStore.getConfig(queryEditorDdlTarget.value.connectionId));
+});
+const queryEditorDdlDialect = computed(() => {
+  return codeMirrorSqlDialect(queryEditorDdlDatabaseType.value);
+});
+const queryEditorObjectSourceDatabaseType = computed(() => {
+  if (!queryEditorObjectSourceTarget.value?.connectionId) return undefined;
+  return effectiveDatabaseTypeForConnection(connectionStore.getConfig(queryEditorObjectSourceTarget.value.connectionId));
+});
+const queryEditorObjectSourceDialect = computed(() => codeMirrorSqlDialect(queryEditorObjectSourceDatabaseType.value));
+const queryEditorObjectSourceFormatDialect = computed(() => sqlFormatDialectForDbType(queryEditorObjectSourceDatabaseType.value));
+const connectionStats = computed(() => ({
+  total: connectionStore.connections.length,
+  connected: connectionStore.connectedIds.size,
+  types: new Set(connectionStore.connections.map((c) => c.driver_profile || c.db_type)).size,
+}));
+const recentConnections = computed(() => rankRecentConnections(connectionStore.connections, recentConnectionIds.value));
+
+function rememberRecentConnection(connectionId: string | null) {
+  if (!connectionId) return;
+  const nextIds = recordRecentConnection(recentConnectionIds.value, connectionId);
+  if (nextIds === recentConnectionIds.value) return;
+  recentConnectionIds.value = nextIds;
+  safeLocalStorageSet(RECENT_CONNECTION_IDS_STORAGE_KEY, JSON.stringify(nextIds));
+}
+
+watch(() => connectionStore.activeConnectionId, rememberRecentConnection);
+
+const savedSqlHistoryItems = computed(() => {
+  const folderById = new Map(savedSqlStore.allFolders.map((folder) => [folder.id, folder]));
+  const folderPath = (folderId?: string): string | undefined => {
+    if (!folderId) return undefined;
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    let folder = folderById.get(folderId);
+    while (folder && !seen.has(folder.id)) {
+      seen.add(folder.id);
+      parts.unshift(folder.name);
+      folder = folder.parentFolderId ? folderById.get(folder.parentFolderId) : undefined;
+    }
+    return parts.join("/");
+  };
+  return rankSavedSqlHistory(savedSqlStore.allFiles, { limit: 6 }).map((file) => {
+    const connection = connectionStore.getConfig(file.connectionId);
+    return {
+      id: file.id,
+      name: file.name,
+      connectionName: connection ? connectionRedactedNameLabel(connection) : t("welcome.unknownConnection"),
+      database: file.database,
+      folderName: folderPath(file.folderId),
+      openCount: file.openCount ?? 0,
+    };
+  });
+});
+const saveSqlFolders = computed(() => {
+  const folderById = new Map(savedSqlStore.allFolders.map((folder) => [folder.id, folder]));
+  const pathForFolder = (folderId: string) => {
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    let folder = folderById.get(folderId);
+    while (folder && !seen.has(folder.id)) {
+      seen.add(folder.id);
+      parts.unshift(folder.name);
+      folder = folder.parentFolderId ? folderById.get(folder.parentFolderId) : undefined;
+    }
+    return parts.join(" / ");
+  };
+  return savedSqlStore.allFoldersTreeOrder.map((folder) => ({
+    ...folder,
+    displayName: pathForFolder(folder.id) || folder.name,
+  }));
+});
+
+async function applyUiScale(scale: number) {
+  if (!isDesktop) return;
+  try {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    await getCurrentWebview().setZoom(scale);
+    window.dispatchEvent(new CustomEvent("dbx:ui-scale-applied", { detail: { scale } }));
+  } catch (error) {
+    console.warn("[DBX] Failed to apply UI scale", { scale, error });
+  }
+}
+
+function setGlobalUiScale(scale: number) {
+  settingsStore.updateEditorSettings({ uiScale: scale });
+}
+
+function zoomInUi() {
+  setGlobalUiScale(settingsStore.editorSettings.uiScale + 0.1);
+}
+
+function zoomOutUi() {
+  setGlobalUiScale(settingsStore.editorSettings.uiScale - 0.1);
+}
+
+function resetUiZoom() {
+  setGlobalUiScale(1);
+}
+
+function applyUiFontFamily(fontFamily: string) {
+  if (typeof document === "undefined") return;
+  const next = fontFamily || DEFAULT_UI_FONT_FAMILY;
+  // Override Tailwind's shared sans variable so app chrome and existing UI classes stay in sync.
+  document.documentElement.style.setProperty(APP_FONT_SANS_CSS_VAR, next);
+  document.body.style.fontFamily = `var(${APP_FONT_SANS_CSS_VAR}, ${DEFAULT_UI_FONT_FAMILY})`;
+}
+
+function applyDataGridFontFamily(fontFamily: string) {
+  if (typeof document === "undefined") return;
+  document.documentElement.style.setProperty(DATA_GRID_FONT_FAMILY_CSS_VAR, fontFamily || DEFAULT_DATA_GRID_FONT_FAMILY);
+}
+
+// Both grid renderers read these variables, so overriding them here recolors the
+// DOM classes and the canvas paint theme at once. Clearing them hands control
+// back to the light/dark blocks in globals.css.
+function applyDataGridTypeColors() {
+  if (typeof document === "undefined") return;
+  const style = document.documentElement.style;
+  const colors = resolveActiveDataGridTypeColors(settingsStore.editorSettings.dataGridTypeColorSchemes, settingsStore.editorSettings.activeDataGridTypeColorSchemeId);
+  for (const key of DATA_GRID_TYPE_COLOR_KEYS) {
+    const varName = dataGridTypeColorCssVar(key);
+    if (colors) style.setProperty(varName, colors[key]);
+    else style.removeProperty(varName);
+  }
+}
+
+const appUiFontFamilyStyle = computed<Record<string, string>>(() => {
+  const fontFamily = settingsStore.editorSettings.uiFontFamily || DEFAULT_UI_FONT_FAMILY;
+  return {
+    [APP_FONT_SANS_CSS_VAR]: fontFamily,
+    fontFamily: `var(${APP_FONT_SANS_CSS_VAR}, ${DEFAULT_UI_FONT_FAMILY})`,
+  };
+});
+
+function isGlobalUiZoomTarget(target: EventTarget | null): target is Element {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("[data-query-editor-root], [data-cell-detail-editor-root], [data-object-source-editor]")) {
+    return true;
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) {
+    return false;
+  }
+  return !target.closest("[contenteditable='true']");
+}
+
+watch(
+  () => queryStore.activeTabId,
+  (id, previousId) => {
+    if (previousId && previousId !== id && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("dbx:before-tab-switch", {
+          detail: { tabId: id, fromTabId: previousId },
+        }),
+      );
+    }
+    if (id) {
+      if (pendingTabHistoryNavigationId === id) pendingTabHistoryNavigationId = null;
+      else {
+        pendingTabHistoryNavigationId = null;
+        tabNavigationHistory.value = recordTabVisit(tabNavigationHistory.value, id);
+      }
+    } else {
+      pendingTabHistoryNavigationId = null;
+    }
+    if (id) newQueryContextSource.value = "tab";
+    if (id) activateQuerySurface();
+    selectedSql.value = "";
+    activeOutputView.value = "result";
+    if (id) queryStore.reloadEvictedTab(id);
+    const tab = id ? queryStore.tabs.find((candidate) => candidate.id === id) : undefined;
+    if (tab) {
+      lastActiveTabByConnection.set(tab.connectionId, tab.id);
+      openWorkspaceConnectionIds.value = appendUniqueWorkspace(openWorkspaceConnectionIds.value, tab.connectionId);
+      activeWorkspaceConnectionId.value = tab.connectionId;
+    }
+  },
+);
+
+watch(
+  () => connectionStore.activeConnectionId,
+  (connectionId) => {
+    if (connectionId && connectionId !== activeWorkspaceConnectionId.value) activateInstanceWorkspace(connectionId);
+  },
+);
+
+watch(
+  () => queryStore.tabs.map((tab) => tab.connectionId).join("|"),
+  () => {
+    for (const tab of queryStore.tabs) openWorkspaceConnectionIds.value = appendUniqueWorkspace(openWorkspaceConnectionIds.value, tab.connectionId);
+    openWorkspaceConnectionIds.value = openWorkspaceConnectionIds.value.filter((id) => !!connectionStore.getConfig(id));
+  },
+  { immediate: true },
+);
+
+watch(
+  () => connectionStore.selectedTreeNodeId,
+  (id) => {
+    if (id) newQueryContextSource.value = "sidebar";
+  },
+);
+
+watch(
+  () => settingsStore.editorSettings.uiScale,
+  (scale) => {
+    void applyUiScale(scale);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => settingsStore.editorSettings.uiFontFamily,
+  (fontFamily) => {
+    applyUiFontFamily(fontFamily);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => settingsStore.editorSettings.tableFontFamily,
+  (fontFamily) => {
+    applyDataGridFontFamily(fontFamily);
+  },
+  { immediate: true },
+);
+
+watch(
+  [() => settingsStore.editorSettings.activeDataGridTypeColorSchemeId, () => settingsStore.editorSettings.dataGridTypeColorSchemes],
+  () => {
+    applyDataGridTypeColors();
+  },
+  { immediate: true, deep: true },
+);
+
+watch(
+  [() => settingsStore.isEditorSettingsLoaded, () => settingsStore.editorSettings.toolbarItems.exclusiveRightSidebarPanels],
+  ([loaded, exclusive]) => {
+    if (!loaded || !exclusive) return;
+    // Compatibility: old persisted panel flags may contain multiple open panels.
+    applyRightSidebarPanelState(enforceRightSidebarPanelExclusivity(currentRightSidebarPanelState(), lastOpenedRightSidebarPanel));
+  },
+  { immediate: true },
+);
+
+function currentRightSidebarPanelState(): RightSidebarPanelState {
+  return Object.fromEntries(RIGHT_SIDEBAR_PANEL_IDS.map((panelId) => [panelId, rightSidebarPanelRefs[panelId].value])) as RightSidebarPanelState;
+}
+
+function applyRightSidebarPanelState(next: RightSidebarPanelState) {
+  for (const panelId of RIGHT_SIDEBAR_PANEL_IDS) {
+    const panelRef = rightSidebarPanelRefs[panelId];
+    if (panelRef.value === next[panelId]) continue;
+    panelRef.value = next[panelId];
+    const storageKey = rightSidebarPanelStorageKeys[panelId];
+    if (storageKey) safeLocalStorageSet(storageKey, String(next[panelId]));
+  }
+}
+
+function setRightSidebarPanelOpen(panelId: RightSidebarPanelId, open: boolean) {
+  if (panelId === "ai" && !open) {
+    isAiPanelMaximized.value = false;
+  } else if (open && panelId !== "ai" && isAiPanelMaximized.value) {
+    // Opening another right-side panel should make the hidden panel visible again
+    // instead of leaving it behind the maximized AI surface.
+    isAiPanelMaximized.value = false;
+  }
+  const exclusive = settingsStore.isEditorSettingsLoaded && settingsStore.editorSettings.toolbarItems.exclusiveRightSidebarPanels;
+  applyRightSidebarPanelState(transitionRightSidebarPanels(currentRightSidebarPanelState(), panelId, open, exclusive));
+  if (open) {
+    lastOpenedRightSidebarPanel = panelId;
+  } else if (lastOpenedRightSidebarPanel === panelId) {
+    lastOpenedRightSidebarPanel = RIGHT_SIDEBAR_PANEL_IDS.find((candidate) => rightSidebarPanelRefs[candidate].value);
+  }
+}
+
+function toggleRightSidebarPanel(panelId: RightSidebarPanelId) {
+  setRightSidebarPanelOpen(panelId, !rightSidebarPanelRefs[panelId].value);
+}
+
+function openRightSidebarPanel(panelId: RightSidebarPanelId) {
+  setRightSidebarPanelOpen(panelId, true);
+}
+
+function closeRightSidebarPanel(panelId: RightSidebarPanelId) {
+  setRightSidebarPanelOpen(panelId, false);
+}
+
+function toggleAiPanelMaximized() {
+  if (!showAiPanel.value) return;
+  isAiPanelMaximized.value = !isAiPanelMaximized.value;
+}
+
+function invokeWhenAiReady(invoke: (handle: AiAssistantHandle) => void) {
+  if (aiAssistantRef.value) {
+    invoke(aiAssistantRef.value);
+    return;
+  }
+  // AiAssistant 是异步组件，首次打开面板时单个 nextTick 不足以等待挂载完成，
+  // 因此监听 ref，待其从 null 变为组件实例后再调用。
+  const stop = watch(aiAssistantRef, (handle) => {
+    if (handle) {
+      stop();
+      invoke(handle);
+    }
+  });
+}
+
+function fixWithAi(errorMessage: string) {
+  openRightSidebarPanel("ai");
+  invokeWhenAiReady((handle) => handle.triggerAction("fix", errorMessage));
+}
+
+function sendSelectionToAi(sql: string) {
+  openRightSidebarPanel("ai");
+  invokeWhenAiReady((handle) => handle.setPrompt(sql));
+}
+
+let addToAiRequestId = 0;
+
+async function addToAi(nodesInput: TreeNode | TreeNode[]) {
+  const nodes = Array.isArray(nodesInput) ? nodesInput : [nodesInput];
+  const node = nodes[0];
+  if (!node || (node.type !== "connection" && node.type !== "database" && node.type !== "table") || !node.connectionId) return;
+  const connection = connectionStore.getConfig(node.connectionId);
+  if (!connection) return;
+  const requestId = ++addToAiRequestId;
+
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    if (requestId !== addToAiRequestId) return;
+    connectionStore.activeConnectionId = node.connectionId;
+
+    let target: { database: string; schema?: string; catalog?: string } | null = null;
+    if (node.type === "connection") {
+      const options = await getDatabaseOptions(node.connectionId);
+      if (requestId !== addToAiRequestId) return;
+      target =
+        connection.db_type === "dameng"
+          ? {
+              database: resolveDefaultDatabase(connection, []),
+              schema: resolveDefaultAiSchema(connection, options),
+            }
+          : {
+              database: resolveDefaultDatabase(connection, options),
+              schema: connection.default_schema,
+            };
+    } else if (hasTreeNodeDatabaseContext(node)) {
+      target = { database: node.database, schema: node.schema, catalog: node.catalog };
+    }
+    if (!target) return;
+
+    const currentTab = activeTab.value;
+    const contextChanged = currentTab?.connectionId !== node.connectionId || currentTab?.database !== target.database || (currentTab?.schema || "") !== (target.schema || "") || (currentTab?.catalog || "") !== (target.catalog || "");
+
+    const contextTab = queryStore.tabs.find((tab) => tab.connectionId === node.connectionId && tab.database === target.database && (tab.schema || "") === (target.schema || "") && (tab.catalog || "") === (target.catalog || ""));
+    if (contextTab) {
+      queryStore.switchTab(contextTab.id);
+    } else {
+      queryStore.createTab(node.connectionId, target.database, undefined, "query", target.schema, undefined, target.catalog);
+    }
+
+    const tableMentions = nodes.filter((entry) => entry.type === "table" && !!entry.label).map((entry) => ({ schema: entry.schema, table: entry.label }));
+
+    openRightSidebarPanel("ai");
+    invokeWhenAiReady((handle) => {
+      if (contextChanged) handle.clearContextReferences();
+      for (const mention of tableMentions) handle.addTableMention(mention);
+    });
+  } catch (e: any) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+  }
+}
+
+function openAiPanel() {
+  openRightSidebarPanel("ai");
+}
+
+/** A background AI run reached a terminal/confirmation state while the panel
+ *  was closed. Opens the panel and selects the run's conversation (parent PRD
+ *  §4 line 71 / §9 clickable toast). */
+function handleAiRunNotify(event: Event) {
+  const conversationId = (event as CustomEvent).detail?.conversationId as string | undefined;
+  if (!conversationId) return;
+  openRightSidebarPanel("ai");
+  invokeWhenAiReady((handle) => handle.selectConversationById(conversationId));
+}
+
+function analyzeHistoryWithAi(entry: HistoryEntry) {
+  const connectionId = entry.connection_id || activeTab.value?.connectionId;
+  if (!connectionId) {
+    toast(t("history.aiAnalyzeNoConnection"), 5000);
+    return;
+  }
+
+  const config = connectionStore.getConfig(connectionId);
+  if (!config) {
+    toast(t("history.aiAnalyzeNoConnection"), 5000);
+    return;
+  }
+
+  openAiPanel();
+  const storedDatabase = entry.database || activeTab.value?.database || resolveDefaultDatabase(config, []);
+  const database = config.db_type === "sqlite" ? normalizeSqliteNamespace(storedDatabase, config) : storedDatabase;
+  const title = t("history.aiAnalysisTab");
+  const tabId = queryStore.createTab(connectionId, database || "", title, "query");
+  queryStore.updateSql(tabId, entry.sql);
+  invokeWhenAiReady((handle) => handle.triggerAction("explain", buildHistoryAiAnalysisPrompt(entry)));
+}
+
+function formatActiveSql() {
+  const tab = activeTab.value;
+  if (!tab || tab.mode !== "query" || !tab.sql.trim()) return;
+  formatSqlRequest.value = {
+    id: (formatSqlRequest.value?.id ?? 0) + 1,
+    tabId: tab.id,
+  };
+}
+
+function compressActiveSql() {
+  const tab = activeTab.value;
+  if (!tab || tab.mode !== "query" || !tab.sql.trim()) return;
+  compressSqlRequest.value = {
+    id: (compressSqlRequest.value?.id ?? 0) + 1,
+    tabId: tab.id,
+  };
+}
+
+function toggleSqlKeywordCase() {
+  const sqlFormatter = settingsStore.editorSettings.sqlFormatter;
+  settingsStore.updateEditorSettings({
+    sqlFormatter: {
+      ...sqlFormatter,
+      keywordCase: sqlFormatter.keywordCase === "lower" ? "upper" : "lower",
+    },
+  });
+}
+
+function defaultSavedSqlName(title: string) {
+  const trimmed = title.trim() || "query";
+  const normalized = trimmed.replace(/\s+/g, "_");
+  return normalized.endsWith(".sql") ? normalized : `${normalized}.sql`;
+}
+
+function notifySqlLibrarySaved() {
+  sqlLibrarySaveFeedbackId.value += 1;
+  toast(t("savedSql.saved"), 2000);
+}
+
+function elementCenter(element: HTMLElement | null): { x: number; y: number } | null {
+  if (!element || element.getClientRects().length === 0) return null;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+function saveSqlConfirmButtonElement(): HTMLElement | null {
+  const button = saveSqlConfirmButtonRef.value;
+  if (button instanceof HTMLElement) return button;
+  return button?.$el instanceof HTMLElement ? button.$el : null;
+}
+
+async function notifyNewSqlLibrarySaved(origin: { x: number; y: number } | null) {
+  toast(t("savedSql.saved"), 2000);
+  if (showSqlLibraryPanel.value) {
+    sqlLibrarySaveFeedbackId.value += 1;
+    return;
+  }
+  await nextTick();
+
+  const target = document.querySelector<HTMLElement>("[data-sql-library-trigger]");
+  const destination = elementCenter(target);
+  if (!origin || !destination || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    sqlLibrarySaveFeedbackId.value += 1;
+    return;
+  }
+
+  window.clearTimeout(sqlLibraryFlyAnimationTimer);
+  const animationId = Date.now();
+  sqlLibraryFlyAnimation.value = {
+    id: animationId,
+    fromX: origin.x,
+    fromY: origin.y,
+    toX: destination.x,
+    toY: destination.y,
+  };
+  sqlLibraryFlyAnimationTimer = window.setTimeout(() => finishSqlLibraryFlyAnimation(animationId), 1000);
+}
+
+function finishSqlLibraryFlyAnimation(animationId: number) {
+  if (sqlLibraryFlyAnimation.value?.id !== animationId) return;
+  window.clearTimeout(sqlLibraryFlyAnimationTimer);
+  sqlLibraryFlyAnimation.value = null;
+  sqlLibrarySaveFeedbackId.value += 1;
+}
+
+function canSaveSqlTab(tab: QueryTab): boolean {
+  return !!tab.externalSqlPath || !!tab.sql.trim();
+}
+
+function closePendingSavedTab() {
+  if (!pendingSaveAndCloseTabId.value) return;
+  const closeId = pendingSaveAndCloseTabId.value;
+  pendingSaveAndCloseTabId.value = null;
+  if (pendingPrevActiveTabId.value) queryStore.activeTabId = pendingPrevActiveTabId.value;
+  pendingPrevActiveTabId.value = null;
+  const shouldCloseTab = pendingSaveShouldCloseTab.value;
+  pendingSaveShouldCloseTab.value = true;
+  if (shouldCloseTab) queryStore.closeTab(closeId, { force: true });
+}
+
+function cancelPendingSaveAndClose() {
+  invalidateSaveSqlFolderSelection();
+  showSaveSqlDialog.value = false;
+  pendingSaveAndCloseTabId.value = null;
+  pendingPrevActiveTabId.value = null;
+  pendingSaveShouldCloseTab.value = true;
+  cancelPendingAppClose();
+}
+
+function cancelPendingAppClose() {
+  pendingAppCloseAction.value = null;
+  pendingCloseActionChoice.value = false;
+  showAiRunsClosePrompt.value = false;
+  aiRunsQuitConfirmed = false;
+  pendingSaveShouldCloseTab.value = true;
+}
+
+async function finishPendingAppClose(action: AppCloseAction) {
+  if (action === "quit" && !aiRunsQuitConfirmed && blockingAiRunCount.value > 0) {
+    pendingAppCloseAction.value = action;
+    showAiRunsClosePrompt.value = true;
+    return;
+  }
+  aiRunsQuitConfirmed = false;
+  if (pendingCloseActionChoice.value) {
+    pendingCloseActionChoice.value = false;
+    showCloseActionPrompt.value = true;
+    return;
+  }
+  pendingAppCloseAction.value = null;
+  pendingSaveShouldCloseTab.value = true;
+  const disposeRuntimeBeforeClose = () => (action === "quit" ? disposeAllSqlServerActivityTraces().catch(() => undefined) : Promise.resolve());
+  if (queryStore.requiresAppCloseDraftPersist) {
+    await finishAppCloseWithRequiredPersist({
+      persist: () => queryStore.flushPendingPersist(),
+      beforeClose: disposeRuntimeBeforeClose,
+      close: () => performCloseAction(action),
+      onPersistError: (error) =>
+        toast(
+          t("settings.appCloseDraftPersistFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+          8000,
+        ),
+    });
+    return;
+  }
+  await disposeRuntimeBeforeClose();
+  await queryStore.flushPendingPersist().catch(() => undefined);
+  await performCloseAction(action);
+}
+
+function confirmQuitWithActiveAiRuns() {
+  const action = pendingAppCloseAction.value ?? "quit";
+  showAiRunsClosePrompt.value = false;
+  aiRunsQuitConfirmed = true;
+  void finishPendingAppClose(action);
+}
+
+function continuePendingAppCloseAfterSave() {
+  const action = pendingAppCloseAction.value;
+  if (!action) return;
+  if (queryStore.hasDirtyTabs) {
+    pendingSaveShouldCloseTab.value = false;
+    if (queryStore.requestAppCloseConfirmation()) return;
+  }
+  finishPendingAppClose(action);
+}
+
+function requestAppClose(action: AppCloseAction, options: AppCloseRequestOptions = {}) {
+  pendingCloseActionChoice.value = !!options.requireCloseActionChoice;
+  if (queryStore.hasDirtyTabs) {
+    pendingAppCloseAction.value = action;
+    pendingSaveShouldCloseTab.value = false;
+    if (queryStore.requestAppCloseConfirmation()) return;
+  }
+  finishPendingAppClose(action);
+}
+
+function completePendingTabSave(tabId: string) {
+  if (pendingAppCloseAction.value) {
+    continuePendingAppCloseAfterSave();
+    return;
+  }
+  queryStore.closeTab(tabId, { force: true });
+}
+
+function handleDiscardPendingTabClose() {
+  if (!pendingAppCloseAction.value) return;
+  continuePendingAppCloseAfterSave();
+}
+
+function handleDiscardAllPendingTabClose() {
+  if (!pendingAppCloseAction.value) return;
+  continuePendingAppCloseAfterSave();
+}
+
+function handleCloseActionPromptOpenChange(open: boolean) {
+  showCloseActionPrompt.value = open;
+  if (!open) {
+    cancelCloseActionPrompt();
+    cancelPendingAppClose();
+  }
+}
+
+async function writeExternalSqlTab(tab: QueryTab, options: { closeAfterSave?: boolean; expectedContentHash?: string; expectedMissing?: boolean } = {}): Promise<"saved" | "retry" | "failed"> {
+  if (!tab.externalSqlPath || !isTauriRuntime()) return "failed";
+  try {
+    const result = await api.writeExternalSqlFile(tab.externalSqlPath, await formattedSqlForSave(tab), {
+      expectedContentHash: options.expectedContentHash,
+      expectedMissing: options.expectedMissing,
+    });
+    if (result.kind !== "written") return "retry";
+    rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId: tab.connectionId, database: tab.database, catalog: tab.catalog, schema: tab.schema });
+    queryStore.markExternalSqlFileSaved(tab.id, result.version);
+    toast(t("savedSql.saved"), 2000);
+    if (options.closeAfterSave) queryStore.closeTab(tab.id, { force: true });
+    return "saved";
+  } catch (e: any) {
+    toast(t("toolbar.sqlSaveFailed", { message: e?.message || String(e) }), 5000);
+    return "failed";
+  }
+}
+
+async function saveExternalSqlPath(tab: QueryTab, options: { closeAfterSave?: boolean } = {}): Promise<boolean> {
+  if (!tab.externalSqlPath || !isTauriRuntime()) return false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const preparation = await externalSqlFileChanges.prepareSave(tab);
+    if (!preparation.proceed) {
+      if (options.closeAfterSave && queryStore.tabs.some((candidate) => candidate.id === tab.id) && !queryStore.isTabDirty(tab)) {
+        queryStore.closeTab(tab.id, { force: true });
+      }
+      return true;
+    }
+    const result = await writeExternalSqlTab(tab, {
+      closeAfterSave: options.closeAfterSave,
+      expectedContentHash: preparation.expectedContentHash,
+      expectedMissing: preparation.expectedMissing,
+    });
+    if (result !== "retry") return true;
+  }
+  toast(t("externalSqlFile.checkFailed", { message: t("externalSqlFile.changedAgain") }), 5000);
+  return true;
+}
+
+function savedSqlTargetForSave(tab: QueryTab) {
+  return savedSqlDefaultTargetForWrite({
+    connectionId: tab.connectionId,
+    database: tab.database,
+    schema: tab.schema,
+    catalog: tab.catalog,
+  });
+}
+
+/**
+ * Applies the "format SQL when saving SQL files" editor setting: returns the
+ * formatted SQL that should be written to disk / the SQL library, mirroring the
+ * editor's own formatting logic (Mongo shell, Elasticsearch, structured JSON/XML
+ * and SQL) so a save never corrupts non-SQL content. When formatting changes the
+ * SQL, the tab content is also updated so the editor reflects exactly what was
+ * saved and stays clean if `markTabClean` runs afterwards.
+ */
+async function formattedSqlForSave(tab: QueryTab): Promise<string> {
+  if (!settingsStore.editorSettings.formatSqlOnSqlFileSave) return tab.sql;
+  if (tab.externalSqlPath && !isSqlFilePath(tab.externalSqlPath)) return tab.sql;
+  const sqlSnapshot = tab.sql;
+  if (!sqlSnapshot.trim()) return sqlSnapshot;
+  const connection = connectionStore.getConfig(tab.connectionId);
+  const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection?.db_type;
+  if (!canFormatSqlForDatabaseType(databaseType)) return sqlSnapshot;
+  try {
+    return await formatSqlSnapshotForSave(
+      sqlSnapshot,
+      () => tab.sql,
+      async (sql) => {
+        if (databaseType === "mongodb") return formatMongoShellText(sql, settingsStore.editorSettings.sqlFormatter);
+        const esRequest = detectAndFormatElasticsearchRequests(sql, databaseType, settingsStore.editorSettings.sqlFormatter.tabWidth);
+        if (esRequest.kind === "elasticsearch") return esRequest.formatted;
+        if (esRequest.kind === "unsupported") return sql;
+        const structured = detectAndFormatStructured(sql, {
+          indentSize: settingsStore.editorSettings.sqlFormatter.tabWidth,
+          useTabs: settingsStore.editorSettings.sqlFormatter.useTabs,
+        });
+        if (structured.kind === "json" || structured.kind === "xml") return structured.formatted;
+        if (structured.kind === "unsupported") return sql;
+        return formatSqlForEditing(sql, sqlFormatDialectForDbType(databaseType), settingsStore.editorSettings.sqlFormatter);
+      },
+      (formatted) => queryStore.updateSql(tab.id, formatted),
+    );
+  } catch {
+    return tab.sql;
+  }
+}
+
+async function saveTabForCloseAll(tabId: string): Promise<boolean> {
+  const tab = queryStore.tabs.find((t) => t.id === tabId);
+  if (!tab) return true;
+  queryStore.activeTabId = tabId;
+
+  if (tab.mode === "structure") {
+    await nextTick();
+    return (await contentAreaRef.value?.applyTableStructureChanges?.()) === true;
+  }
+  if (!canSaveSqlTab(tab)) return true;
+
+  if (tab.objectSource) return saveActiveObjectSource(tab);
+
+  if (await saveExternalSqlPath(tab)) return !queryStore.isTabDirty(tab);
+
+  const existing = tab.savedSqlId ? savedSqlStore.getFile(tab.savedSqlId) : undefined;
+  const target = savedSqlTargetForSave(tab);
+  try {
+    const saved = await savedSqlStore.saveFile({
+      id: existing?.id,
+      connectionId: target.connectionId,
+      folderId: existing?.folderId,
+      name: existing?.name || defaultSavedSqlName(tab.title),
+      database: target.database,
+      catalog: target.catalog,
+      schema: target.schema,
+      sql: await formattedSqlForSave(tab),
+    });
+    queryStore.linkSavedSql(tab.id, saved.id, saved.name);
+    queryStore.markTabClean(tab);
+    return true;
+  } catch (e: any) {
+    toast(t("savedSql.saveFailed", { message: savedSqlErrorMessage(e, t) }), 5000);
+    return false;
+  }
+}
+
+async function handleSaveAllPendingTabClose() {
+  const ids = [...queryStore.closeConfirmDirtyTabIds];
+  if (!ids.length) return;
+  queryStore.suspendCloseConfirm();
+
+  for (const id of ids) {
+    const saved = await saveTabForCloseAll(id);
+    if (!saved) break;
+  }
+
+  if (queryStore.closeConfirmDirtyTabIds.length > 0) {
+    queryStore.resumeCloseConfirm();
+    return;
+  }
+
+  const result = queryStore.completePendingCloseAfterSaveAll();
+  if (result === "app") continuePendingAppCloseAfterSave();
+}
+
+async function handleSaveTab(tabId: string) {
+  const tab = queryStore.tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  if (tab.mode === "structure") {
+    queryStore.activeTabId = tabId;
+    await nextTick();
+    if (await contentAreaRef.value?.applyTableStructureChanges?.()) {
+      completePendingTabSave(tabId);
+    } else {
+      queryStore.resumeCloseConfirm();
+    }
+    return;
+  }
+  if (!canSaveSqlTab(tab)) return;
+  const closeAfterSave = pendingAppCloseAction.value === null;
+  pendingSaveShouldCloseTab.value = closeAfterSave;
+  if (tab.objectSource) {
+    const saved = await saveActiveObjectSource(tab);
+    if (saved) completePendingTabSave(tabId);
+    else if (pendingAppCloseAction.value) cancelPendingAppClose();
+    return;
+  }
+  if (await saveExternalSqlPath(tab, { closeAfterSave })) {
+    if (!closeAfterSave) continuePendingAppCloseAfterSave();
+    return;
+  }
+  const existing = tab.savedSqlId ? savedSqlStore.getFile(tab.savedSqlId) : undefined;
+  if (existing) {
+    try {
+      const target = savedSqlTargetForSave(tab);
+      const updated = await savedSqlStore.saveFile({
+        id: existing.id,
+        connectionId: target.connectionId,
+        folderId: existing.folderId,
+        name: existing.name,
+        database: target.database,
+        catalog: target.catalog,
+        schema: target.schema,
+        sql: await formattedSqlForSave(tab),
+      });
+      queryStore.linkSavedSql(tab.id, updated.id, updated.name);
+      queryStore.markTabClean(tab);
+      notifySqlLibrarySaved();
+      completePendingTabSave(tabId);
+    } catch (error) {
+      toast(t("savedSql.saveFailed", { message: savedSqlErrorMessage(error, t) }), 5000);
+      queryStore.resumeCloseConfirm();
+    }
+    return;
+  }
+  // No existing saved SQL — open save dialog, then close after save
+  const prevActive = queryStore.activeTabId;
+  queryStore.activeTabId = tabId;
+  saveSqlName.value = defaultSavedSqlName(tab.title);
+  resetSaveSqlFolderSelection(ROOT_SAVED_SQL_FOLDER);
+  pendingSaveAndCloseTabId.value = tabId;
+  pendingPrevActiveTabId.value = prevActive;
+  showSaveSqlDialog.value = true;
+}
+
+async function openSaveSqlDialog() {
+  const tab = activeTab.value;
+  if (!tab || !canSaveSqlTab(tab)) return;
+  if (tab.objectSource) {
+    await saveActiveObjectSource(tab);
+    return;
+  }
+  if (await saveExternalSqlPath(tab)) return;
+  const existing = tab.savedSqlId ? savedSqlStore.getFile(tab.savedSqlId) : undefined;
+  if (existing) {
+    try {
+      const target = savedSqlTargetForSave(tab);
+      const updated = await savedSqlStore.saveFile({
+        id: existing.id,
+        connectionId: target.connectionId,
+        folderId: existing.folderId,
+        name: existing.name,
+        database: target.database,
+        catalog: target.catalog,
+        schema: target.schema,
+        sql: await formattedSqlForSave(tab),
+      });
+      queryStore.linkSavedSql(tab.id, updated.id, updated.name);
+      queryStore.markTabClean(tab);
+      notifySqlLibrarySaved();
+    } catch (error) {
+      toast(t("savedSql.saveFailed", { message: savedSqlErrorMessage(error, t) }), 5000);
+    }
+    return;
+  }
+
+  saveSqlName.value = defaultSavedSqlName(tab.title);
+  resetSaveSqlFolderSelection(ROOT_SAVED_SQL_FOLDER);
+  showSaveSqlDialog.value = true;
+}
+
+async function saveActiveObjectSource(tab: QueryTab): Promise<boolean> {
+  const connection = connectionStore.getConfig(tab.connectionId);
+  const source = tab.objectSource;
+  if (!connection || !source) return false;
+
+  try {
+    const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection.db_type;
+    const statements = await buildExecutableObjectSourceStatements({
+      databaseType,
+      objectType: source.objectType,
+      schema: source.schema || tab.schema || tab.database,
+      name: source.name,
+      source: tab.sql,
+    });
+    const executableSql = statements.filter((sql) => sql.trim()).join(";\n");
+    if (executableSql.trim()) {
+      const saved = await executeWithProductionSqlGuard({
+        connection,
+        database: tab.database,
+        sql: executableSql,
+        source: t("production.sourceObjectSource"),
+        execute: async () => {
+          await executeObjectSourceSave(tab.connectionId, tab.database, databaseType, statements, source.schema || tab.schema);
+          return true;
+        },
+      });
+      if (!saved) return false;
+    } else {
+      await executeObjectSourceSave(tab.connectionId, tab.database, databaseType, statements, source.schema || tab.schema);
+    }
+    queryStore.markTabClean(tab);
+    toast(t("objects.sourceSaved"), 2000);
+    return true;
+  } catch (e: any) {
+    toast(t("objects.sourceSaveFailed", { message: e?.message || String(e) }), 5000);
+    return false;
+  }
+}
+
+function saveSqlFolderDisplayName(id: string) {
+  if (id === ROOT_SAVED_SQL_FOLDER) return t("savedSql.rootFolder");
+  const folder = saveSqlFolders.value.find((f) => f.id === id);
+  return folder?.displayName ?? id;
+}
+
+function saveSqlFolderNormalizeCustom(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  const folder = saveSqlFolders.value.find((f) => f.displayName === trimmed);
+  return folder ? folder.id : trimmed;
+}
+
+async function handleSaveSqlFolderSelect(value: string) {
+  const isExisting = value === ROOT_SAVED_SQL_FOLDER || saveSqlFolders.value.some((f) => f.id === value);
+  if (isExisting) {
+    await selectSaveSqlFolder(value);
+    return;
+  }
+  const tab = activeTab.value;
+  if (!tab) return;
+  await selectSaveSqlFolder(
+    value,
+    async () => (await savedSqlStore.createFolder(tab.connectionId, value)).id,
+    (error: any) => toast(t("savedSql.createFolderFailed", { message: error?.message || String(error) }), 5000),
+  );
+}
+
+async function confirmSaveSqlToLibrary() {
+  if (saveSqlFolderCreationPending.value) return;
+  const tab = activeTab.value;
+  const name = saveSqlName.value.trim();
+  if (!tab || !tab.sql.trim() || !name) return;
+  const flyOrigin = elementCenter(saveSqlConfirmButtonElement());
+  try {
+    const target = savedSqlTargetForSave(tab);
+    const saved = await savedSqlStore.saveFile({
+      id: tab.savedSqlId,
+      connectionId: target.connectionId,
+      folderId: saveSqlFolderId.value === ROOT_SAVED_SQL_FOLDER ? undefined : saveSqlFolderId.value,
+      name: defaultSavedSqlName(name),
+      database: target.database,
+      catalog: target.catalog,
+      schema: target.schema,
+      sql: await formattedSqlForSave(tab),
+    });
+    queryStore.linkSavedSql(tab.id, saved.id, saved.name);
+    queryStore.markTabClean(tab);
+    showSaveSqlDialog.value = false;
+    closePendingSavedTab();
+    void notifyNewSqlLibrarySaved(flyOrigin);
+  } catch (e: any) {
+    toast(t("savedSql.saveFailed", { message: savedSqlErrorMessage(e, t) }), 5000);
+  }
+}
+
+async function saveExternalSqlTabAs(tab: QueryTab): Promise<boolean> {
+  if (!canSaveSqlTab(tab) || !isTauriRuntime()) return false;
+  try {
+    // Non-SQL external tabs (custom-filtered text files) keep their own file
+    // name and extension when saving a copy instead of being forced to .sql.
+    const currentFileName = tab.externalSqlPath?.split(/[\\/]/).pop()?.trim() ?? "";
+    const filterExtension = currentFileName.includes(".") ? currentFileName.split(".").pop()?.toLowerCase() : undefined;
+    const saved = await api.saveExternalSqlFile(currentFileName || defaultSavedSqlName(tab.title), await formattedSqlForSave(tab), filterExtension);
+    if (!saved) return false;
+    queryStore.linkExternalSqlPath(tab.id, saved.path, sqlFileTitleFromPath(saved.path), saved.version);
+    rememberExternalSqlFileTarget(saved.path, { connectionId: tab.connectionId, database: tab.database, catalog: tab.catalog, schema: tab.schema });
+    invalidateSaveSqlFolderSelection();
+    showSaveSqlDialog.value = false;
+    closePendingSavedTab();
+    toast(t("savedSql.saved"), 2000);
+    return true;
+  } catch (e: any) {
+    toast(t("toolbar.sqlSaveFailed", { message: e?.message || String(e) }), 5000);
+    return false;
+  }
+}
+
+async function saveActiveSqlAsLocalFile() {
+  const tab = activeTab.value;
+  if (tab) await saveExternalSqlTabAs(tab);
+}
+
+function applyExternalSqlFileTarget(tab: QueryTab, path: string) {
+  const target = resolveExternalSqlFileTarget(path, (savedConnectionId) => !!connectionStore.getConfig(savedConnectionId), unassociatedExternalSqlFileTarget());
+  if (target.connectionId !== tab.connectionId) {
+    queryStore.updateConnection(tab.id, target.connectionId, target.database);
+  }
+  if (target.catalog !== tab.catalog || target.database !== tab.database) {
+    if (target.catalog !== undefined || tab.catalog !== undefined) queryStore.updateCatalog(tab.id, target.catalog, target.database);
+    else queryStore.updateDatabase(tab.id, target.database);
+  }
+  // updateConnection/updateCatalog/updateDatabase all reset the schema, so the
+  // remembered schema has to be reapplied after them.
+  if (target.schema !== tab.schema) queryStore.updateSchema(tab.id, target.schema);
+}
+
+async function openSqlFile() {
+  const tab = activeTab.value;
+  if (!tab) return;
+  try {
+    if (isTauriRuntime()) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({
+        filters: [{ name: "SQL", extensions: ["sql"] }],
+        multiple: false,
+      });
+      if (path) {
+        const sqlPath = path as string;
+        const snapshot = await api.readExternalSqlFileSnapshot(sqlPath);
+        queryStore.updateSql(tab.id, snapshot.content);
+        queryStore.linkExternalSqlPath(tab.id, sqlPath, sqlFileTitleFromPath(sqlPath), snapshot.version);
+        applyExternalSqlFileTarget(tab, sqlPath);
+      }
+    } else {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".sql";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          queryStore.updateSql(tab.id, await readBrowserSqlFile(file));
+        } catch (e: any) {
+          toast(t("toolbar.sqlOpenFailed", { message: externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)) }), 5000);
+        }
+      };
+      input.click();
+    }
+  } catch (e: any) {
+    toast(t("toolbar.sqlOpenFailed", { message: externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)) }), 5000);
+  }
+}
+
+async function importResultArchive() {
+  try {
+    const bytes = await openQueryResultArchiveFile();
+    if (!bytes) return;
+    const tabId = await queryStore.importResultArchive(bytes);
+    if (!tabId) {
+      toast(t("tabs.resultArchiveImportInvalid"), 5000);
+      return;
+    }
+    activeOutputView.value = "result";
+    toast(t("tabs.resultArchiveImported"), 2500);
+  } catch (e: any) {
+    toast(t("tabs.resultArchiveImportFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+function pasteClipboardAsSqlInCondition() {
+  void contentAreaRef.value?.pasteClipboardAsSqlInCondition?.();
+}
+
+// Cold-start file arguments can arrive while persisted tabs are still being
+// restored. Keep external SQL tabs behind that phase only, so unrelated
+// initialization cannot permanently block files opened from the OS.
+let desktopOpenTabsRestorationBarrier: OpenTabsRestorationBarrier | null = null;
+
+async function openSqlFilePath(path: string) {
+  if (!isTauriRuntime()) return;
+  try {
+    await desktopOpenTabsRestorationBarrier?.settled;
+    const snapshot = await api.readExternalSqlFileSnapshot(path);
+    const target = resolveExternalSqlFileTarget(path, (savedConnectionId) => !!connectionStore.getConfig(savedConnectionId), unassociatedExternalSqlFileTarget());
+    queryStore.openExternalSqlFile(target.connectionId, target.database, path, snapshot.content, snapshot.version, target.catalog, target.schema);
+  } catch (e: any) {
+    toast(t("toolbar.sqlOpenFailed", { message: externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)) }), 5000);
+  }
+}
+
+async function openPendingSqlFiles() {
+  if (!isTauriRuntime()) return;
+  try {
+    const paths = await api.pendingOpenSqlFiles();
+    for (const path of paths) {
+      await openSqlFilePath(path);
+    }
+  } catch {
+    /* ignore startup file-open probing errors */
+  }
+}
+
+async function openDbFilePath(path: string) {
+  if (!isTauriRuntime()) return;
+  await connectionStore.initFromDisk();
+  try {
+    const name = path.split("/").pop()?.split("\\").pop() || path;
+    const dbType = await detectDatabaseFileType(path);
+    if (!dbType) return;
+
+    // Check for existing connection with the same file path
+    const existing = connectionStore.connections.find((c) => c.host === path);
+    if (existing) {
+      const { ask } = await import("@tauri-apps/plugin-dialog");
+      const switchTo = await ask(`A connection to "${path}" already exists. Switch to it?`, {
+        title: "Database Already Open",
+        kind: "info",
+      });
+      if (switchTo) {
+        connectionStore.activeConnectionId = existing.id;
+        connectionStore.ensureConnected(existing.id).catch(() => {});
+        const node = connectionStore.treeNodes.find((n) => n.id === existing.id);
+        if (node && !node.isExpanded) {
+          connectionStore.loadDatabases(existing.id);
+        }
+      }
+      return;
+    }
+
+    const config: ConnectionConfig = {
+      id: uuid(),
+      name,
+      db_type: dbType,
+      driver_profile: dbType,
+      driver_label: dbType === "duckdb" ? "DuckDB" : "SQLite",
+      url_params: "",
+      host: path,
+      port: 0,
+      username: "",
+      password: "",
+    };
+    await connectionStore.addConnection(config);
+    await connectionStore.connect(config);
+    toast(t("welcome.fileOpened", { name }));
+  } catch (e: any) {
+    toast(t("toolbar.sqlOpenFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+async function openPendingDbFiles() {
+  if (!isTauriRuntime()) return;
+  try {
+    const paths = await api.pendingOpenDbFiles();
+    for (const path of paths) {
+      await openDbFilePath(path);
+    }
+  } catch {
+    /* ignore startup file-open probing errors */
+  }
+}
+
+async function openConnectionDeepLink(url: string) {
+  await connectionStore.initFromDisk();
+  try {
+    const draft = parseConnectionDeepLink(url);
+    if (!draft) return;
+    connectionStore.stopEditing();
+    connectionStore.stopCreatingConnectionInGroup();
+    connectionDialogPrefill.value = draft;
+    showConnectionDialog.value = true;
+  } catch (e: any) {
+    toast(
+      t("connection.parseConnectionUrlFailed", {
+        message: e?.message || String(e),
+      }),
+      5000,
+    );
+  }
+}
+
+async function openPendingConnectionLinks() {
+  if (!isTauriRuntime()) return;
+  try {
+    const links = await api.pendingOpenConnectionLinks();
+    for (const link of links) {
+      await openConnectionDeepLink(link);
+    }
+  } catch {
+    /* ignore startup deep-link probing errors */
+  }
+}
+
+async function openAiConfigDeepLink(url: string) {
+  try {
+    const draft = parseAiConfigDeepLink(url);
+    if (!draft) return;
+    settingsAiConfigDraft.value = draft;
+    settingsAiConfigRequestId.value += 1;
+    openSettings("ai");
+  } catch (e: any) {
+    toast(
+      t("ai.deepLinkInvalid", {
+        message: e?.message || String(e),
+      }),
+      5000,
+    );
+  }
+}
+
+async function openPendingAiConfigLinks() {
+  if (!isTauriRuntime()) return;
+  try {
+    const links = await api.pendingOpenAiConfigLinks();
+    for (const link of links) {
+      await openAiConfigDeepLink(link);
+    }
+  } catch {
+    /* ignore startup deep-link probing errors */
+  }
+}
+
+function setConnectionDialogOpen(value: boolean) {
+  showConnectionDialog.value = value;
+  if (!value) {
+    connectionDialogPrefill.value = null;
+    connectionDialogInitialTab.value = undefined;
+  }
+}
+
+function openConnectionSettings(connectionId: string, initialTab: ConfigTab = "connection") {
+  if (!connectionStore.getConfig(connectionId)) return;
+  connectionDialogInitialTab.value = initialTab;
+  connectionStore.startEditing(connectionId);
+  showConnectionDialog.value = true;
+}
+
+async function newQuery() {
+  const target = resolveNewQueryTarget({
+    activeTab: activeTab.value,
+    selectedTreeNode: findTreeNodeById(connectionStore.treeNodes, connectionStore.selectedTreeNodeId),
+    activeConnectionId: connectionStore.activeConnectionId,
+    connections: connectionStore.connections,
+    preferredSource: newQueryContextSource.value,
+  });
+  if (!target) return;
+  const conn = connectionStore.getConfig(target.connectionId);
+  if (!conn) return;
+  connectionStore.activeConnectionId = target.connectionId;
+  const connectionTarget = quickConnectionOpenTarget(conn);
+  if (connectionTarget.kind !== "query") {
+    try {
+      await connectionStore.ensureConnected(target.connectionId);
+      if (connectionTarget.kind === "mq-admin") {
+        queryStore.openMqAdmin(target.connectionId);
+      } else if (connectionTarget.kind === "nacos-admin") {
+        await connectionStore.loadNacosNamespaces(target.connectionId);
+        queryStore.openNacosAdmin(target.connectionId);
+      } else {
+        queryStore.createTab(target.connectionId, "", `${conn.name}:keys`, connectionTarget.kind);
+      }
+    } catch (e: any) {
+      toast(
+        t("connection.connectFailed", {
+          message: translateBackendError(t, e),
+        }),
+        5000,
+      );
+    }
+    return;
+  }
+  // Prefill the editor with `SELECT * FROM <focused table>` when enabled and a
+  // table context (active data/structure tab or selected table node) is available.
+  // Built before createTab so the tab opens with the content directly (no flash).
+  const initialSql = resolveNewQueryInitialSql({
+    activeTab: activeTab.value,
+    selectedTreeNode: findTreeNodeById(connectionStore.treeNodes, connectionStore.selectedTreeNodeId),
+    preferredSource: newQueryContextSource.value,
+    prefillEnabled: settingsStore.editorSettings.prefillNewQueryWithSelect,
+    targetConnectionId: target.connectionId,
+    targetDatabase: target.database,
+    databaseType: effectiveDatabaseTypeForConnection(conn),
+    driverProfile: conn.driver_profile,
+    identifierQuote: connectionStore.connectionIdentifierQuote?.(target.connectionId),
+    includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+  });
+  const tabId = queryStore.createTab(conn.id, target.database, undefined, "query", target.schema, initialSql, target.catalog);
+  if (initialSql) {
+    const prefilledTab = queryStore.tabs.find((t) => t.id === tabId);
+    if (prefilledTab) {
+      prefilledTab.editorSelection = { anchor: initialSql.length, head: initialSql.length };
+    }
+  }
+  try {
+    await connectionStore.ensureConnected(target.connectionId);
+    if (target.shouldRefreshDefaultDatabase) {
+      const options = await getDatabaseOptions(target.connectionId);
+      queryStore.updateDatabase(tabId, resolveDefaultDatabase(conn, options));
+    }
+  } catch (e: any) {
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e),
+      }),
+      5000,
+    );
+  }
+}
+
+async function openConnectionQuery(connectionId: string) {
+  const connection = connectionStore.getConfig(connectionId);
+  if (!connection) return;
+  rememberRecentConnection(connectionId);
+  connectionStore.activeConnectionId = connectionId;
+  const initialTarget = quickConnectionOpenTarget(connection);
+  if (initialTarget.kind === "mq-admin") {
+    queryStore.openMqAdmin(connectionId);
+    return;
+  }
+  if (initialTarget.kind === "nacos-admin") {
+    try {
+      await connectionStore.ensureConnected(connectionId);
+      await connectionStore.loadNacosNamespaces(connectionId);
+    } catch (e: any) {
+      toast(
+        t("connection.connectFailed", {
+          message: translateBackendError(t, e),
+        }),
+        5000,
+      );
+    }
+    return;
+  }
+  if (initialTarget.kind === "etcd" || initialTarget.kind === "zookeeper" || initialTarget.kind === "consul") {
+    try {
+      await connectionStore.ensureConnected(connectionId);
+      queryStore.createTab(connectionId, "", `${connection.name}:keys`, initialTarget.kind);
+    } catch (e: any) {
+      toast(
+        t("connection.connectFailed", {
+          message: translateBackendError(t, e),
+        }),
+        5000,
+      );
+    }
+    return;
+  }
+  const tabId = queryStore.createTab(connectionId, initialTarget.database);
+  try {
+    await connectionStore.ensureConnected(connectionId);
+    const options = await getDatabaseOptions(connectionId);
+    const target = quickConnectionOpenTarget(connection, options);
+    if (target.kind === "query") {
+      queryStore.updateDatabase(tabId, target.database);
+    }
+  } catch (e: any) {
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e),
+      }),
+      5000,
+    );
+  }
+}
+
+async function openSavedSqlFromWelcome(fileId: string) {
+  const file = await savedSqlStore.ensureFileContent(fileId);
+  if (!file) return;
+  const tabId = queryStore.openSavedSql(file);
+  const openedConnectionId = queryStore.tabs.find((tab) => tab.id === tabId)?.connectionId ?? file.connectionId;
+  if (openedConnectionId) connectionStore.activeConnectionId = openedConnectionId;
+  void savedSqlStore.recordFileUsage(file.id);
+  toast(t("welcome.fileOpened", { name: file.name }), 2000);
+}
+
+function tableTargetFromActiveTab(table: string | SqlObjectNavigationTarget) {
+  const tab = activeTab.value;
+  if (!tab) return null;
+  const connectionId = tab.connectionId;
+  const catalog = tab.tableMeta?.catalog || tab.catalog;
+  if (typeof table !== "string") {
+    // Structured targets already separate qualifiers; reparsing would corrupt quoted object names that contain dots.
+    return {
+      connectionId,
+      database: table.database || tab.database,
+      catalog,
+      schema: table.schema || tab.schema,
+      tableName: table.name,
+      tableType: table.type ? sqlObjectNavigationTableType(table) : undefined,
+    };
+  }
+
+  let database = tab.database;
+  let schema = tab.schema;
+  const tableName = table;
+
+  const parts = tableName.split(".").filter(Boolean);
+  const rawTableName = parts[parts.length - 1] || tableName;
+  if (parts.length >= 3) {
+    database = parts[parts.length - 3] || database;
+    schema = parts[parts.length - 2];
+  } else if (parts.length === 2) {
+    const dbType = connectionStore.getConfig(connectionId)?.db_type;
+    if (dbType && !isSchemaAware(dbType) && !isSingleDatabase(dbType)) {
+      database = parts[0] || database;
+      schema = undefined;
+    } else {
+      schema = parts[0];
+    }
+  }
+
+  return { connectionId, database, catalog, schema, tableName: rawTableName, tableType: undefined };
+}
+
+async function onClickTable(table: SqlObjectNavigationTarget) {
+  // Procedures/functions/packages open source (same as sidebar view-source), not table data/DDL.
+  if (isSqlObjectNavigationRoutineType(table.type)) {
+    await onOpenObjectSource(table, false);
+    return;
+  }
+  const target = tableTargetFromActiveTab(table);
+  if (!target) return;
+  const objectType = sqlObjectNavigationSourceKind(table);
+  if (objectType) {
+    // Definition navigation for views must not run the view query, which may be expensive or have side effects upstream.
+    queryEditorDdlTarget.value = { ...target, objectType };
+    showQueryEditorDdlDialog.value = true;
+    return;
+  }
+  if (settingsStore.editorSettings.clickTableNavigationTarget === "ddl") {
+    queryStore.openTableStructure(target.connectionId, target.database, target.schema, target.tableName, "ddl", undefined, target.catalog);
+    return;
+  }
+  try {
+    await openObjectBrowserTableTarget(target);
+  } catch (e: any) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+  }
+}
+
+async function onViewTableData(table: SqlObjectNavigationTarget) {
+  const target = tableTargetFromActiveTab(table);
+  if (!target) return;
+  try {
+    await openObjectBrowserTableTarget(target);
+  } catch (e: any) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+  }
+}
+
+function onViewTableDdl(table: SqlObjectNavigationTarget) {
+  const target = tableTargetFromActiveTab(table);
+  if (!target) return;
+  queryEditorDdlTarget.value = { ...target, objectType: sqlObjectNavigationSourceKind(table) };
+  showQueryEditorDdlDialog.value = true;
+}
+
+function onEditTableStructure(table: SqlObjectNavigationTarget) {
+  const target = tableTargetFromActiveTab(table);
+  // Keep view-like objects out of the table editor even if a stale menu dispatches this event.
+  if (!target || sqlObjectNavigationSourceKind(table)) return;
+  queryStore.openTableStructure(target.connectionId, target.database, target.schema, target.tableName, undefined, undefined, target.catalog);
+}
+
+async function onOpenObjectSource(table: SqlObjectNavigationTarget, initialEditing: boolean) {
+  const provisionalTarget = tableTargetFromActiveTab(table);
+  if (!provisionalTarget) return;
+  const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(provisionalTarget.connectionId));
+  // Oracle-family: unquoted → UPPER; quoted mixed-case keeps written case for ALL_SOURCE lookup.
+  const navigation = databaseType === "oracle" || databaseType === "dameng" || databaseType === "oceanbase-oracle" || databaseType === "yashandb" || databaseType === "oscar" ? normalizeOracleNavigationTarget(table) : table;
+  const target = tableTargetFromActiveTab(navigation);
+  const objectType = sqlObjectNavigationSourceKind(navigation);
+  if (!target || !objectType) return;
+  const sourceName = sqlObjectNavigationSourceName(navigation);
+  const sourceSchema = sqlObjectNavigationSourceSchema(navigation, target.schema || target.database);
+  try {
+    await connectionStore.ensureConnected(target.connectionId);
+    connectionStore.activeConnectionId = target.connectionId;
+    // Align Ctrl/Cmd+click with sidebar "view source" (dialog vs data tab).
+    if (settingsStore.editorSettings.routineSourceOpenMode === "query-tab") {
+      try {
+        const resolvedDatabaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(target.connectionId));
+        if (!resolvedDatabaseType) throw new Error("Connection type is unavailable.");
+        // Wrap Oracle bare ALL_SOURCE (`procedure name is ...`) as CREATE OR REPLACE for the editor.
+        const {
+          raw,
+          editableSource,
+          objectType: resolvedType,
+        } = await loadEditableObjectSourceForEditor(api.getObjectSource, buildEditableObjectSource, {
+          connectionId: target.connectionId,
+          database: target.database,
+          schema: sourceSchema || target.database,
+          name: sourceName,
+          objectType,
+          databaseType: resolvedDatabaseType,
+          signature: navigation.signature,
+        });
+        const tabId = queryStore.createTab(target.connectionId, target.database, `Source - ${sourceName}`, "query", sourceSchema, editableSource, target.catalog, { forceNew: true });
+        const sourceIsEditable = raw.editable !== false && !["SEQUENCE", "TRIGGER", "TYPE", "TYPE_BODY"].includes(resolvedType);
+        if (sourceIsEditable) {
+          queryStore.setObjectSource(tabId, {
+            schema: sourceSchema || target.database,
+            name: sourceName,
+            objectType: resolvedType,
+            signature: navigation.signature,
+          });
+        }
+      } catch (e: any) {
+        toast(e?.message || String(e), 5000);
+      }
+      return;
+    }
+    queryEditorObjectSourceTarget.value = {
+      connectionId: target.connectionId,
+      database: target.database,
+      schema: sourceSchema,
+      name: sourceName,
+      objectType,
+      initialEditing,
+      signature: navigation.signature,
+    };
+    showQueryEditorObjectSourceDialog.value = true;
+  } catch (e: any) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+  }
+}
+
+function onQueryEditorObjectSourceSaved() {
+  const target = queryEditorObjectSourceTarget.value;
+  if (!target) return;
+  connectionStore.invalidateMetadataCache(target.connectionId, target.database, target.schema, target.name);
+  connectionStore.invalidateCompletionCache(target.connectionId, target.database);
+  contentAreaRef.value?.refreshQueryEditorCompletionCache();
+}
+
+async function changeActiveConnection(connectionId: string) {
+  const tab = activeTab.value;
+  if (!tab) return;
+  const connection = connectionStore.getConfig(connectionId);
+  if (!connection) return;
+  const initialDatabase = resolveDefaultDatabase(connection, []);
+  queryStore.updateConnection(tab.id, connectionId, initialDatabase);
+  if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId, database: initialDatabase, catalog: undefined, schema: undefined });
+  connectionStore.activeConnectionId = connectionId;
+  try {
+    await connectionStore.ensureConnected(connectionId);
+    const options = await getDatabaseOptions(connectionId);
+    const database = resolveDefaultDatabase(connection, options);
+    queryStore.updateDatabase(tab.id, database);
+    if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId, database, catalog: undefined, schema: undefined });
+    if (connection.default_schema || connection.db_type === "oracle") {
+      try {
+        // A configured default wins. Otherwise Oracle returns the session's current schema first.
+        const orderedSchemas = connection.default_schema ? [] : await api.listSchemas(connectionId, database);
+        const schema = schemaAfterConnectionSwitch(connection.db_type, orderedSchemas, connection.default_schema);
+        if (schema && activeTab.value?.id === tab.id && activeTab.value.connectionId === connectionId) {
+          queryStore.updateSchema(tab.id, schema);
+          if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId, database, catalog: undefined, schema });
+        }
+      } catch {
+        // Schema metadata failure must not turn a successful connection switch into a connection error.
+      }
+    }
+  } catch (e: any) {
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e),
+      }),
+      5000,
+    );
+  }
+}
+
+function changeActiveDatabase(database: string) {
+  const tab = activeTab.value;
+  if (tab) {
+    queryStore.updateDatabase(tab.id, database);
+    if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId: tab.connectionId, database, catalog: tab.catalog, schema: tab.schema });
+    if (databaseRequiredTabId.value === tab.id && database) {
+      databaseRequiredTabId.value = null;
+    }
+  }
+}
+
+function changeActiveCatalog(catalog: string | undefined, database: string) {
+  const tab = activeTab.value;
+  if (tab) {
+    queryStore.updateCatalog(tab.id, catalog, database);
+    if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId: tab.connectionId, database, catalog, schema: tab.schema });
+  }
+}
+
+async function setActiveDatabaseAsDefault() {
+  const tab = activeTab.value;
+  if (!tab || !tab.connectionId || !tab.database || tab.catalog) return;
+  await connectionStore.setDefaultDatabase(tab.connectionId, tab.database);
+}
+
+async function clearActiveDefaultDatabase() {
+  const tab = activeTab.value;
+  if (!tab || !tab.connectionId) return;
+  await connectionStore.clearDefaultDatabase(tab.connectionId);
+}
+
+function changeActiveSchema(schema: string | undefined) {
+  const tab = activeTab.value;
+  if (!tab) return;
+  queryStore.updateSchema(tab.id, schema);
+  if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId: tab.connectionId, database: tab.database, catalog: tab.catalog, schema });
+}
+
+function openGitHub() {
+  openUrl("https://github.com/t8y2/dbx");
+}
+function openMcpGuide() {
+  openUrl("https://dbxio.com/cn/docs/mcp");
+}
+
+function setSidebarOpen(open: boolean) {
+  sidebarOpen.value = open;
+  safeLocalStorageSet("dbx-sidebar-open", open ? "true" : "false");
+}
+
+async function locateTabInSidebar(tab: QueryTab) {
+  setSidebarOpen(true);
+  await nextTick();
+  await appSidebarRef.value?.locateTabInSidebar(tab);
+}
+
+function ensureQueryTab(): string {
+  const tab = activeTab.value;
+  if (tab && tab.mode === "query") return tab.id;
+  const connId = connectionStore.activeConnectionId || connectionStore.connections[0]?.id || "";
+  const sameConnectionTab = tab?.connectionId === connId ? tab : undefined;
+  const db = sameConnectionTab?.database || connectionStore.getConfig(connId)?.database || "";
+  const schema = sameConnectionTab?.schema ?? sameConnectionTab?.objectBrowser?.schema ?? sameConnectionTab?.tableMeta?.schema;
+  const catalog = sameConnectionTab?.catalog ?? sameConnectionTab?.objectBrowser?.catalog ?? sameConnectionTab?.tableMeta?.catalog;
+  return queryStore.createTab(connId, db, undefined, "query", schema, undefined, catalog);
+}
+
+function routeAiRedisCommand(command: string, execute: boolean): boolean {
+  if (activeConnection.value?.db_type !== "redis") return false;
+
+  // Redis has a dedicated console. Falling through to ensureQueryTab() would
+  // recreate the original bug by opening a SQL tab for a Redis command.
+  const routed = execute ? contentAreaRef.value?.executeRedisCommand(command) : contentAreaRef.value?.insertRedisCommand(command);
+  if (!routed) {
+    console.warn("[DBX] Redis AI command could not reach the active Redis console");
+    return true;
+  }
+  void routed.then((handled) => {
+    if (!handled) console.warn("[DBX] Redis AI command could not reach the active Redis console");
+  });
+  return true;
+}
+
+function onAiAppendSql(sql: string) {
+  if (routeAiRedisCommand(sql, false)) return;
+  const tabId = ensureQueryTab();
+  const currentSql = queryStore.tabs.find((tab) => tab.id === tabId)?.sql ?? "";
+  const appendedSql = buildDeduplicatedAppendedEditorSql(currentSql, sql);
+  if (appendedSql !== currentSql) queryStore.updateSql(tabId, appendedSql);
+}
+
+function runAiGeneratedSql(sql: string) {
+  selectedSql.value = "";
+  nextTick(() => tryExecute(sql));
+}
+
+function onAiExecuteSql(sql: string) {
+  if (routeAiRedisCommand(sql, true)) return;
+  const tabId = ensureQueryTab();
+  const currentSql = queryStore.tabs.find((tab) => tab.id === tabId)?.sql ?? "";
+  const appendedSql = buildDeduplicatedAppendedEditorSql(currentSql, sql);
+  if (appendedSql !== currentSql) queryStore.updateSql(tabId, appendedSql);
+  runAiGeneratedSql(sql);
+}
+
+function onAiTempRunSql(sql: string) {
+  if (routeAiRedisCommand(sql, true)) return;
+  ensureQueryTab();
+  runAiGeneratedSql(sql);
+}
+
+function onAiRequestAutoExecuteSql(sql: string) {
+  if (routeAiRedisCommand(sql, true)) return;
+  const tabId = ensureQueryTab();
+  queryStore.updateSql(tabId, buildAppendedEditorSql(activeTab.value?.sql || "", sql));
+  selectedSql.value = "";
+
+  const productionAssessment = assessProductionSql(sql, activeConnection.value, activeTab.value?.database);
+  if (productionAssessment.active && productionAssessment.isMutation) {
+    toast(t("production.aiReviewRequired"), 5000);
+    return;
+  }
+
+  const decision = classifyAiSqlExecution(sql, activeConnection.value);
+  if (decision.action === "block") {
+    toast(t("ai.autoSqlBlocked"), 5000);
+    return;
+  }
+
+  nextTick(() => {
+    if (decision.action === "auto_execute") {
+      void doExecute(sql);
+      return;
+    }
+    dangerSql.value = sql;
+    pendingDangerSql.value = sql;
+    showDangerDialog.value = true;
+  });
+}
+
+function onAiOpenExplainPlan(sql: string) {
+  const tabId = ensureQueryTab();
+  queryStore.updateSql(tabId, buildAppendedEditorSql(activeTab.value?.sql || "", sql));
+  selectedSql.value = "";
+  nextTick(() => {
+    void tryExplain(sql);
+  });
+}
+
+async function handleQuickOpenSelect(item: any) {
+  const connectionStore = useConnectionStore();
+  const queryStore = useQueryStore();
+
+  // Handle SQL file types first — they don't require a database connection
+  if (item.type === "sql_file" && item.filePath) {
+    try {
+      const snapshot = await api.readExternalSqlFileSnapshot(item.filePath);
+      const target = resolveExternalSqlFileTarget(item.filePath, (savedConnectionId) => !!connectionStore.getConfig(savedConnectionId), unassociatedExternalSqlFileTarget());
+      queryStore.openExternalSqlFile(target.connectionId, target.database, item.filePath, snapshot.content, snapshot.version, target.catalog, target.schema);
+    } catch (e: any) {
+      toast(
+        externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)),
+        5000,
+      );
+    }
+    return;
+  }
+
+  if (item.type === "sql_library_file" && item.sqlFileId) {
+    const file = await savedSqlStore.ensureFileContent(item.sqlFileId);
+    if (!file) return;
+    const tabId = queryStore.openSavedSql(file);
+    connectionStore.activeConnectionId = queryStore.tabs.find((tab) => tab.id === tabId)?.connectionId ?? file.connectionId;
+    void savedSqlStore.recordFileUsage(file.id);
+    return;
+  }
+
+  // For all other types, set the active connection
+  connectionStore.activeConnectionId = item.connectionId;
+
+  // Ensure connection is connected
+  try {
+    await connectionStore.ensureConnected(item.connectionId);
+  } catch (error) {
+    console.error("Failed to connect:", error);
+    return;
+  }
+
+  // Navigate based on type
+  if (item.type === "connection") {
+    // Expand connection node in sidebar
+    // Tree node ID for connection is just the connectionId
+    const connNode = findTreeNodeById(connectionStore.treeNodes, item.connectionId);
+    if (connNode && !connNode.isExpanded) {
+      const config = connectionStore.getConfig(item.connectionId);
+      if (config?.db_type === "redis") {
+        await connectionStore.loadRedisDatabases(item.connectionId);
+      } else if (config?.db_type === "etcd") {
+        await connectionStore.loadEtcdRoot(item.connectionId);
+      } else if (config?.db_type === "zookeeper") {
+        await connectionStore.loadZooKeeperRoot(item.connectionId);
+      } else if (config?.db_type === "consul") {
+        await connectionStore.loadConsulRoot(item.connectionId);
+      } else if (config?.db_type === "mongodb") {
+        await connectionStore.loadMongoDatabases(item.connectionId);
+      } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch" || config?.db_type === "meilisearch") {
+        await connectionStore.openElasticsearchConnectionTree(item.connectionId);
+      } else if (config?.db_type === "qdrant" || config?.db_type === "milvus" || config?.db_type === "weaviate" || config?.db_type === "chromadb") {
+        await connectionStore.loadVectorCollections(item.connectionId);
+      } else if (config?.db_type === "mq") {
+        await connectionStore.loadMqTenants(item.connectionId);
+      } else {
+        await connectionStore.loadDatabases(item.connectionId);
+      }
+    }
+    return;
+  } else if (item.type === "database") {
+    // Expand connection node first
+    // Tree node ID for connection is just the connectionId
+    const connNode = findTreeNodeById(connectionStore.treeNodes, item.connectionId);
+    if (connNode && !connNode.isExpanded) {
+      const config = connectionStore.getConfig(item.connectionId);
+      if (config?.db_type === "redis") {
+        await connectionStore.loadRedisDatabases(item.connectionId);
+      } else if (config?.db_type === "etcd") {
+        await connectionStore.loadEtcdRoot(item.connectionId);
+      } else if (config?.db_type === "zookeeper") {
+        await connectionStore.loadZooKeeperRoot(item.connectionId);
+      } else if (config?.db_type === "consul") {
+        await connectionStore.loadConsulRoot(item.connectionId);
+      } else if (config?.db_type === "mongodb") {
+        await connectionStore.loadMongoDatabases(item.connectionId);
+      } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch" || config?.db_type === "meilisearch") {
+        await connectionStore.openElasticsearchConnectionTree(item.connectionId);
+      } else if (config?.db_type === "qdrant" || config?.db_type === "milvus" || config?.db_type === "weaviate" || config?.db_type === "chromadb") {
+        await connectionStore.loadVectorCollections(item.connectionId);
+      } else if (config?.db_type === "mq") {
+        await connectionStore.loadMqTenants(item.connectionId);
+      } else {
+        await connectionStore.loadDatabases(item.connectionId);
+      }
+    }
+
+    // Expand database node
+    // Tree node ID for database is `${connectionId}:${database_name}`
+    const dbNodeId = `${item.connectionId}:${item.database}`;
+    const dbNode = findTreeNodeById(connectionStore.treeNodes, dbNodeId);
+    if (dbNode && !dbNode.isExpanded) {
+      const config = connectionStore.getConfig(item.connectionId);
+      const effectiveDbType = effectiveDatabaseTypeForConnection(config);
+      if (config?.db_type === "sqlserver") {
+        await connectionStore.loadSqlServerDatabaseObjects(item.connectionId, item.database);
+      } else if (usesTreeSchemaMode(effectiveDbType) && !connectionUsesDatabaseObjectTreeMode(config)) {
+        await connectionStore.loadSchemas(item.connectionId, item.database);
+      } else {
+        await connectionStore.loadTables(item.connectionId, item.database);
+      }
+    }
+    return;
+  } else if (item.type === "schema") {
+    const dbNode = findTreeNodeById(connectionStore.treeNodes, `${item.connectionId}:${item.database}`);
+    if (dbNode && !dbNode.isExpanded) await connectionStore.loadSchemas(item.connectionId, item.database);
+    const schemaNode = findTreeNodeById(connectionStore.treeNodes, `${item.connectionId}:${item.database}:${item.schema}`);
+    if (schemaNode && !schemaNode.isExpanded) await connectionStore.loadTables(item.connectionId, item.database, item.schema);
+    return;
+  } else if (item.type === "table" || item.type === "view" || item.type === "materialized_view") {
+    // Open the table/view in a data tab
+    await openTableTarget({
+      connectionId: item.connectionId,
+      database: item.database,
+      schema: item.schema,
+      tableName: item.objectName || item.tableName,
+      tableType: item.type === "view" ? "VIEW" : item.type === "materialized_view" ? "MATERIALIZED_VIEW" : "TABLE",
+    });
+  } else if (item.type === "procedure" || item.type === "function" || item.type === "trigger" || item.type === "event" || item.type === "sequence" || item.type === "package" || item.type === "package-body" || item.type === "type" || item.type === "type-body") {
+    // Open the object source in a source tab
+    const objectTypeMap: Record<string, ObjectSourceKind> = {
+      procedure: "PROCEDURE",
+      function: "FUNCTION",
+      trigger: "TRIGGER",
+      event: "EVENT",
+      sequence: "SEQUENCE",
+      package: "PACKAGE",
+      "package-body": "PACKAGE_BODY",
+      type: "TYPE",
+      "type-body": "TYPE_BODY",
+    };
+
+    const objectType = objectTypeMap[item.type];
+    if (!objectType) return;
+
+    const schema = item.schema || item.database;
+    try {
+      const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(item.connectionId));
+      if (!databaseType) throw new Error("Connection type is unavailable.");
+      const objectName = item.objectName || item.tableName;
+      const { editableSource, objectType: resolvedType } = await loadEditableObjectSourceForEditor(api.getObjectSource, buildEditableObjectSource, {
+        connectionId: item.connectionId,
+        database: item.database,
+        schema,
+        name: objectName,
+        objectType,
+        databaseType,
+        signature: item.signature,
+      });
+      const tabId = queryStore.createTab(item.connectionId, item.database, `Source - ${objectName}`);
+      queryStore.updateSql(tabId, editableSource);
+      if (item.type !== "sequence" && item.type !== "trigger" && item.type !== "event" && item.type !== "type" && item.type !== "type-body") {
+        queryStore.setObjectSource(tabId, {
+          schema,
+          name: objectName,
+          objectType: resolvedType,
+          signature: item.signature,
+        });
+      }
+      queryStore.markTabClean(queryStore.tabs.find((tab) => tab.id === tabId));
+    } catch (error) {
+      toast((error as any)?.message || String(error), 5000);
+    }
+  }
+}
+
+function dispatchBeforeTabSwitch(tabId: string) {
+  if (tabId === queryStore.activeTabId) return;
+  window.dispatchEvent(new CustomEvent("dbx:before-tab-switch", { detail: { tabId, fromTabId: queryStore.activeTabId } }));
+}
+
+function activateQueryTab(tabId: string): boolean {
+  if (!queryStore.tabs.some((tab) => tab.id === tabId)) return false;
+  dispatchBeforeTabSwitch(tabId);
+  queryStore.activeTabId = tabId;
+  activateQuerySurface();
+  return true;
+}
+
+function activateTabByIndex(index: number): boolean {
+  const tab = queryStore.tabs[index];
+  return tab ? activateQueryTab(tab.id) : false;
+}
+
+function activateAdjacentTab(direction: -1 | 1): boolean {
+  const count = queryStore.tabs.length;
+  if (count < 2) return false;
+  const currentIndex = queryStore.tabs.findIndex((tab) => tab.id === queryStore.activeTabId);
+  const nextIndex = currentIndex < 0 ? (direction > 0 ? 0 : count - 1) : (currentIndex + direction + count) % count;
+  return activateTabByIndex(nextIndex);
+}
+
+function activateTabFromHistory(direction: -1 | 1): boolean {
+  const move = moveInTabNavigationHistory(tabNavigationHistory.value, direction, new Set(queryStore.tabs.map((tab) => tab.id)), queryStore.activeTabId);
+  if (!move) return false;
+
+  const previousHistory = tabNavigationHistory.value;
+  tabNavigationHistory.value = move.history;
+  pendingTabHistoryNavigationId = move.tabId;
+  if (activateQueryTab(move.tabId)) return true;
+
+  tabNavigationHistory.value = previousHistory;
+  pendingTabHistoryNavigationId = null;
+  return false;
+}
+
+const tabSwitcherTabs = computed(() => tabSwitcherOrder(queryStore.tabs, queryStore.recentTabIds));
+const tabSwitcherShortcutHint = computed(() => formatShortcutDisplay(settingsStore.editorSettings.shortcuts.tabSwitcher));
+
+function handleTabSwitcherShortcut(direction: -1 | 1, e: KeyboardEvent): boolean {
+  if (!queryStore.tabs.length) return false;
+  if (!showTabSwitcher.value) {
+    tabSwitcherKeyboard.rememberOpeningEvent(e);
+    tabSwitcherIndex.value = initialTabSwitcherSelection(tabSwitcherTabs.value.length);
+    showTabSwitcher.value = true;
+  } else {
+    tabSwitcherIndex.value = moveTabSwitcherSelection(tabSwitcherIndex.value, direction, tabSwitcherTabs.value.length);
+  }
+  return true;
+}
+
+function closeTabSwitcher(commit: boolean) {
+  tabSwitcherKeyboard.reset();
+  if (!showTabSwitcher.value) return;
+  showTabSwitcher.value = false;
+  if (!commit) return;
+  const tab = tabSwitcherTabs.value[tabSwitcherIndex.value];
+  if (tab) activateQueryTab(tab.id);
+}
+
+function handleKeyup(e: KeyboardEvent) {
+  tabSwitcherKeyboard.handleKeyup(e);
+}
+
+function handleTabSwitcherKeydownCapture(e: KeyboardEvent) {
+  tabSwitcherKeyboard.handleKeydownCapture(e);
+}
+
+function handleTabSwitcherWindowBlur() {
+  tabSwitcherKeyboard.handleWindowBlur();
+}
+
+function handleTabSwitcherVisibilityChange() {
+  tabSwitcherKeyboard.handleVisibilityChange(document.visibilityState);
+}
+
+function handleTabSwitcherSelect(tabId: string) {
+  tabSwitcherKeyboard.reset();
+  showTabSwitcher.value = false;
+  activateQueryTab(tabId);
+}
+
+function handleTabSwitcherOpenChange(open: boolean) {
+  if (!open) closeTabSwitcher(false);
+}
+
+const tabSwitcherKeyboard = createTabSwitcherKeyboardController({
+  isOpen: () => showTabSwitcher.value,
+  shortcut: () => settingsStore.editorSettings.shortcuts.tabSwitcher,
+  move: (direction) => {
+    tabSwitcherIndex.value = moveTabSwitcherSelection(tabSwitcherIndex.value, direction, tabSwitcherTabs.value.length);
+  },
+  commit: () => closeTabSwitcher(true),
+  cancel: () => closeTabSwitcher(false),
+});
+
+function handleNativeSelectAll(e: KeyboardEvent) {
+  if (shouldBlockAppNativeSelectAll(e)) e.preventDefault();
+}
+
+async function handleKeydown(e: KeyboardEvent) {
+  if (e.defaultPrevented) return;
+
+  const shortcuts = settingsStore.editorSettings.shortcuts;
+  if (showTabSwitcher.value) return;
+  // Grid-scoped shortcuts normally win inside DataGrid. Keep that precedence
+  // for a data tab even when focus is in a sibling input, where the grid's
+  // local listener intentionally leaves native editing untouched.
+  if (isGoToColumnShortcut(e, shortcuts) && contentAreaRef.value?.openGoToColumn()) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
+  const tabSwitcherDirection = tabSwitcherDirectionFromShortcut(e, shortcuts);
+  if (tabSwitcherDirection) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleTabSwitcherShortcut(tabSwitcherDirection, e);
+    return;
+  }
+
+  const switchTabIndex = switchToTabIndexFromShortcut(e, shortcuts);
+
+  if (isOpenSettingsShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    openSettings();
+    return;
+  }
+  if (isQuickOpenShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    showQuickOpen.value = true;
+    return;
+  }
+  if (isFocusSearchShortcut(e, shortcuts)) {
+    const focused = contentAreaRef.value?.focusSearch() || appSidebarRef.value?.focusSearch();
+    if (focused) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return;
+  }
+  if (isRefreshDataShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    contentAreaRef.value?.refreshData();
+    return;
+  }
+  if (isToggleResultsPaneShortcut(e, shortcuts) && contentAreaRef.value?.toggleResultsPane()) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  if (isNewQueryShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    void newQuery();
+    return;
+  }
+  if (isToggleSidebarShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSidebarOpen(!sidebarOpen.value);
+    return;
+  }
+  if (isToggleZenModeShortcut(e, shortcuts) && activeTab.value?.mode === "data") {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleZenMode();
+    return;
+  }
+  if (switchTabIndex != null) {
+    if (activateTabByIndex(switchTabIndex)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return;
+  }
+  if (handleTabHistoryNavigationShortcut(e, shortcuts, activateTabFromHistory)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  if (isSwitchToPreviousTabShortcut(e, shortcuts)) {
+    if (activateAdjacentTab(-1)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return;
+  }
+  if (isSwitchToNextTabShortcut(e, shortcuts)) {
+    if (activateAdjacentTab(1)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return;
+  }
+  if (isCloseOtherTabsShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    appTabBarRef.value?.closeOtherActiveTabs();
+    return;
+  }
+  if (isCloseTabShortcut(e, shortcuts)) {
+    e.preventDefault();
+    if (showSettingsPage.value) {
+      closeSettingsPage();
+    } else if (showDriverStore.value) {
+      closeDriverStorePage();
+    } else if (queryStore.activeTabId) {
+      if (await queryStore.clearQueryResults(queryStore.activeTabId)) return;
+      queryStore.closeTab(queryStore.activeTabId);
+    }
+    return;
+  }
+  if (isSaveShortcut(e, shortcuts) && e.target instanceof Element && isObjectSourceSaveShortcutTarget(e.target)) {
+    return;
+  }
+  if (activeTab.value?.mode === "query" && !showSaveSqlDialog.value && isSaveShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    void openSaveSqlDialog();
+    return;
+  }
+  // CodeMirror ignores keydown events after an IME composition changes the
+  // document, so this app-level fallback must share the editor shortcut guard.
+  if (activeTab.value?.mode === "query" && isExecuteSqlInNewResultTabShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!contentAreaRef.value?.shouldBlockQueryEditorExecutionShortcut?.(e)) requestActiveEditorExecuteInNewResultTab();
+    return;
+  }
+  if (activeTab.value?.mode === "query" && isExecuteSqlShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!contentAreaRef.value?.shouldBlockQueryEditorExecutionShortcut?.(e)) requestActiveEditorExecute();
+    return;
+  }
+  if (activeTab.value?.mode === "query" && isSendSelectionToAiShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (selectedSql.value.trim()) sendSelectionToAi(selectedSql.value);
+    return;
+  }
+  if (isModRShortcut(e) && e.target instanceof Element && contentAreaRef.value?.handleModRTarget(e.target)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  if (isDesktop && isGlobalUiZoomTarget(e.target)) {
+    if (isZoomInShortcut(e, shortcuts)) {
+      e.preventDefault();
+      e.stopPropagation();
+      zoomInUi();
+      return;
+    }
+    if (isZoomOutShortcut(e, shortcuts)) {
+      e.preventDefault();
+      e.stopPropagation();
+      zoomOutUi();
+      return;
+    }
+    if (isResetZoomShortcut(e, shortcuts)) {
+      e.preventDefault();
+      e.stopPropagation();
+      resetUiZoom();
+      return;
+    }
+  }
+  if (isDesktop && isBrowserReloadShortcut(e)) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+function onLoginSuccess() {
+  authenticated.value = true;
+  setupRequired.value = false;
+  needsAuth.value = true;
+  window.history.replaceState(null, "", webPath("/"));
+  void initApp();
+}
+
+async function initApp() {
+  const t0 = performance.now();
+  console.log("[STARTUP] initApp begin");
+  const restoreOpenTabs = async () => {
+    await settingsStore.initEditorSettings();
+    console.log(`[STARTUP]   settingsStore.initEditorSettings: ${(performance.now() - t0).toFixed(0)}ms`);
+    await connectionStore.initFromDisk();
+    console.log(`[STARTUP]   connectionStore.initFromDisk: ${(performance.now() - t0).toFixed(0)}ms`);
+    await queryStore.initOpenTabs({ validConnectionIds: connectionStore.connections.map((connection) => connection.id) });
+    console.log(`[STARTUP]   queryStore.initOpenTabs: ${(performance.now() - t0).toFixed(0)}ms`);
+  };
+
+  try {
+    if (desktopOpenTabsRestorationBarrier) {
+      await initializeDesktopOpenTabs({
+        barrier: desktopOpenTabsRestorationBarrier,
+        initializeOptionalState: () => settingsStore.initAiConfigs(),
+        restoreOpenTabs,
+        onOptionalStateError: (error) => console.error("[STARTUP] settingsStore.initAiConfigs failed", error),
+      });
+    } else {
+      await initializeOpenTabs({
+        initializeOptionalState: () => settingsStore.initAiConfigs(),
+        restoreOpenTabs,
+        onOptionalStateError: (error) => console.error("[STARTUP] settingsStore.initAiConfigs failed", error),
+      });
+    }
+    await settingsStore.initDesktopSettings().catch(() => {});
+
+    void promptTemplateStore.init();
+
+    void Promise.all([initSavedSqlEditorPositions(), savedSqlStore.initFromStorage()])
+      .then(() => {
+        console.log(`[STARTUP]   savedSqlStore.initFromStorage: ${(performance.now() - t0).toFixed(0)}ms`);
+        void queryStore.hydrateSavedSqlTabs();
+      })
+      .catch((e: any) => {
+        toast(t("connection.loadFailed", { message: e?.message || String(e) }), 5000);
+      });
+
+    restoreActiveConnectionContext();
+  } catch (e: any) {
+    toast(t("connection.loadFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+function restoreActiveConnectionContext() {
+  const activeConnectionId = activeTab.value?.connectionId || connectionStore.activeConnectionId;
+  if (activeConnectionId && connectionStore.getConfig(activeConnectionId)) {
+    connectionStore.activeConnectionId = activeConnectionId;
+  }
+}
+
+function handleContextMenu(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+
+  // Check if target is a standard editable input element
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    if (import.meta.env.DEV) {
+      console.debug("[contextmenu] Allowing for input/textarea:", target);
+    }
+    return;
+  }
+
+  // Check if target or any parent has contenteditable attribute
+  if (target.isContentEditable || target.closest("[contenteditable]")) {
+    if (import.meta.env.DEV) {
+      console.debug("[contextmenu] Allowing for contenteditable:", target);
+    }
+    return;
+  }
+
+  // Check if target is within a custom context menu container or collection item
+  if (target.closest("[data-reka-collection-item], [data-radix-vue-collection-item], [data-context-menu]")) {
+    if (import.meta.env.DEV) {
+      console.debug("[contextmenu] Allowing for custom context menu container:", target);
+    }
+    return;
+  }
+
+  // Prevent default context menu for all other elements
+  if (import.meta.env.DEV) {
+    console.debug("[contextmenu] Preventing default for:", target);
+  }
+  e.preventDefault();
+}
+
+function openDriverStoreFromEvent(event: Event) {
+  openDriverStorePage(((event as CustomEvent).detail as DriverStoreFocus | undefined) ?? null);
+}
+
+function runUpdateNotificationChecks() {
+  if (!updateNotificationsEnabled.value) return;
+  checkUpdates({ silent: true });
+  void refreshAgentDriverUpdateCount();
+  void refreshMcpUpdateStatus();
+}
+
+watch(updateNotificationsEnabled, (enabled) => {
+  if (!enabled) {
+    agentDriverUpdateCount.value = 0;
+    mcpUpdateAvailable.value = false;
+    if (updateCheckTimer) {
+      clearInterval(updateCheckTimer);
+      updateCheckTimer = undefined;
+    }
+    return;
+  }
+  runUpdateNotificationChecks();
+  if (!updateCheckTimer) {
+    updateCheckTimer = setInterval(runUpdateNotificationChecks, UPDATE_CHECK_INTERVAL_MS);
+  }
+});
+
+onMounted(async () => {
+  console.log("[STARTUP] onMounted begin");
+  const mountStart = performance.now();
+  requestAnimationFrame(() => {
+    aiPanelReady.value = true;
+  });
+  applyTheme();
+  void applyUiScale(settingsStore.editorSettings.uiScale);
+  window.addEventListener("keydown", handleNativeSelectAll, true);
+  window.addEventListener("keydown", handleTabSwitcherKeydownCapture, true);
+  window.addEventListener("keydown", handleKeydown);
+  window.addEventListener("keyup", handleKeyup, true);
+  window.addEventListener("blur", handleTabSwitcherWindowBlur);
+  document.addEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
+  window.addEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
+  window.addEventListener("dbx:activate-query-surface", activateQuerySurface);
+  window.addEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
+  window.addEventListener("dbx:ai-run-notify", handleAiRunNotify);
+  if (isDesktop) {
+    document.addEventListener("contextmenu", handleContextMenu);
+  }
+  // macOS: Ctrl+click fires both click and contextmenu.
+  // Intercept click in capture phase to prevent unwanted navigation.
+  // Windows/Linux use Ctrl+click for multi-select; do not block there.
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (e.ctrlKey && isMacOS()) e.stopPropagation();
+    },
+    true,
+  );
+  if (!isDesktop) {
+    try {
+      const res = await fetch(apiUrl("/api/auth/check"));
+      const data = await res.json();
+      needsAuth.value = data.required;
+      authenticated.value = data.authenticated;
+      setupRequired.value = data.setup_required;
+    } catch {
+      /* server unreachable */
+    }
+    if (needsAuth.value && !authenticated.value) {
+      history.replaceState(null, "", webPath("/login"));
+    }
+    if (!setupRequired.value && (!needsAuth.value || authenticated.value)) void initApp();
+    api
+      .getAppVersion()
+      .then((v) => {
+        appVersion.value = v;
+      })
+      .catch(() => {});
+    return;
+  }
+  desktopOpenTabsRestorationBarrier = createOpenTabsRestorationBarrier();
+  void initApp();
+  setupFileDrop().catch(() => {});
+  setTimeout(() => {
+    runUpdateNotificationChecks();
+    if (updateNotificationsEnabled.value && !updateCheckTimer) {
+      updateCheckTimer = setInterval(runUpdateNotificationChecks, UPDATE_CHECK_INTERVAL_MS);
+    }
+  }, 10_000);
+  api
+    .getAppVersion()
+    .then((v) => {
+      appVersion.value = v;
+    })
+    .catch(() => {});
+  setupTauriListeners();
+  setupCloseActionPromptListener();
+  void openPendingSqlFiles();
+  void openPendingDbFiles();
+  void openPendingConnectionLinks();
+  void openPendingAiConfigLinks();
+  console.log(`[STARTUP] onMounted sync done: ${(performance.now() - mountStart).toFixed(0)}ms`);
+});
+
+onUnmounted(() => {
+  cleanupTauriListeners();
+  cleanupCloseActionPromptListener();
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer);
+  }
+  window.removeEventListener("keydown", handleNativeSelectAll, true);
+  window.removeEventListener("keydown", handleTabSwitcherKeydownCapture, true);
+  window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("keyup", handleKeyup, true);
+  window.removeEventListener("blur", handleTabSwitcherWindowBlur);
+  document.removeEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
+  tabSwitcherKeyboard.reset();
+  window.removeEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
+  window.removeEventListener("dbx:activate-query-surface", activateQuerySurface);
+  window.removeEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
+  window.removeEventListener("dbx:ai-run-notify", handleAiRunNotify);
+  document.removeEventListener("contextmenu", handleContextMenu);
+  window.clearTimeout(sqlLibraryFlyAnimationTimer);
+});
+</script>
+
+<template>
+  <LoginPage v-if="setupRequired || (needsAuth && !authenticated)" :setup-mode="setupRequired" @authenticated="onLoginSuccess" />
+  <div v-show="!setupRequired && (!needsAuth || authenticated)" class="fixed inset-0 h-screen w-screen overflow-hidden">
+    <TooltipProvider :delay-duration="300">
+      <div class="h-screen w-screen max-w-full min-w-[760px] min-h-[600px] flex flex-col bg-background text-foreground overflow-hidden" :class="{ 'dbx-desktop-window-frame': drawDesktopWindowFrame }" :style="appUiFontFamilyStyle">
+        <AppToolbar
+          :is-dark="isDark"
+          :theme-mode="themeMode"
+          :show-ai-panel="showAiPanel"
+          :active-ai-run-count="activeAiRunCount"
+          :awaiting-ai-run-count="awaitingAiRunCount"
+          :show-history="showHistory"
+          :show-sql-library="showSqlLibraryPanel"
+          :sql-library-save-feedback-id="sqlLibrarySaveFeedbackId"
+          :show-sql-file-panel="showSqlFilePanel"
+          :show-driver-store="showDriverStore"
+          :show-settings-page="showSettingsPage"
+          :checking-updates="checkingUpdates"
+          :has-update-available="toolbarHasUpdateAvailable"
+          :is-downloading-update="isDownloadingUpdate"
+          :download-progress="downloadProgress"
+          :update-ready-to-install="updateDownloaded"
+          :update-ready="updateReady"
+          :agent-driver-update-count="toolbarAgentDriverUpdateCount"
+          :has-mcp-update-available="toolbarMcpUpdateAvailable"
+          :has-connections="connectionStore.connections.length > 0"
+          :has-sql-file-connections="hasSqlFileConnections"
+          @new-connection="showConnectionDialog = true"
+          @new-query="newQuery"
+          @set-theme-mode="setThemeMode"
+          @toggle-ai="toggleRightSidebarPanel('ai')"
+          @toggle-history="toggleRightSidebarPanel('history')"
+          @toggle-sql-library="toggleRightSidebarPanel('sqlLibrary')"
+          @toggle-sql-file-panel="toggleRightSidebarPanel('sqlFile')"
+          @open-github="openGitHub"
+          @open-settings="openSettings(toolbarMcpUpdateAvailable ? 'mcp' : 'appearance')"
+          @open-driver-store="openDriverStorePage"
+          @check-updates="checkUpdates()"
+          @open-transfer="dialogs.showTransferDialog.value = true"
+          @open-sql-file="dialogs.showSqlFileDialog.value = true"
+          @open-schema-diff="dialogs.showSchemaDiffDialog.value = true"
+          @open-data-compare="dialogs.showDataCompareDialog.value = true"
+        />
+
+        <div :class="isClassicLayout ? 'app-layout-classic flex-1 flex min-h-0' : 'app-panel-gutter flex-1 flex min-h-0 gap-1 p-1'">
+          <AppSidebar
+            v-show="sidebarOpen && !isZenMode"
+            ref="appSidebarRef"
+            :sidebar-width="sidebarWidth"
+            :classic-layout="isClassicLayout"
+            @import="dialogs.onImportClick"
+            @export="dialogs.onExportClick"
+            @start-resize="startSidebarResize"
+            @collapse="setSidebarOpen(false)"
+            @open-settings="(initialTab) => openSettings(initialTab ?? 'appearance')"
+            @add-to-ai="addToAi"
+          />
+          <div v-show="!sidebarOpen && !isZenMode" class="flex h-full w-8 shrink-0 items-start justify-center border-r bg-background/80 pt-2" :class="isClassicLayout ? '' : 'rounded-md border border-border/80'">
+            <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('sidebar.expand')" :aria-label="t('sidebar.expand')" @click="setSidebarOpen(true)">
+              <ChevronsRight class="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div v-show="!isAiPanelMaximized || isZenMode" :class="isClassicLayout ? 'flex flex-1 min-w-0 flex-col overflow-hidden' : 'flex flex-1 min-w-0 flex-col overflow-hidden rounded-md border border-border/80 bg-background'">
+            <InstanceWorkspaceTabs
+              :connections="openWorkspaceConnections"
+              :layout="connectionStore.sidebarLayout"
+              :active-connection-id="activeWorkspaceConnectionId"
+              @activate="activateInstanceWorkspace"
+              @close="closeInstanceWorkspace"
+            />
+            <div class="min-h-0 flex flex-1 min-w-0" :class="tabWorkspaceLayoutClass">
+              <AppTabBar
+                ref="appTabBarRef"
+                :connection-id="activeWorkspaceConnectionId"
+                :driver-store-open="driverStoreTabOpen"
+                :driver-store-active="driverStoreActive"
+                :settings-page-open="settingsPageTabOpen"
+                :settings-page-active="settingsStore.settingsPageActive"
+                :agent-driver-update-count="toolbarAgentDriverUpdateCount"
+                @toggle-zen-mode="toggleZenMode"
+                @activate-driver-store="openDriverStorePage"
+                @activate-settings-page="activateSettingsPage"
+                @locate-tab="locateTabInSidebar"
+                @activate-tab="activateQuerySurface"
+                @close-driver-store="closeDriverStorePage"
+                @close-settings-page="closeSettingsPage"
+                @save-tab="handleSaveTab"
+                @discard-tab-close="handleDiscardPendingTabClose"
+                @save-all-tab-close="handleSaveAllPendingTabClose"
+                @discard-all-tab-close="handleDiscardAllPendingTabClose"
+                @cancel-tab-close="cancelPendingAppClose"
+              />
+              <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+                <DriverStorePage v-if="driverStoreTabOpen" v-show="driverStoreActive" v-model:active-tab="driverStoreActiveTab" class="flex-1 min-h-0" :update-notifications-enabled="updateNotificationsEnabled" :focus-target="driverStoreFocus" @update-count-change="updateAgentDriverUpdateCount" />
+                <EditorSettingsPage
+                  v-if="settingsPageTabOpen"
+                  v-show="settingsStore.settingsPageActive"
+                  variant="page"
+                  :open="settingsPageTabOpen"
+                  :initial-tab="settingsInitialTab"
+                  :initial-section="settingsInitialSection"
+                  :navigation-request-id="settingsNavigationRequestId"
+                  :ai-config-draft="settingsAiConfigDraft"
+                  :ai-config-request-id="settingsAiConfigRequestId"
+                  :app-version="appVersion"
+                  :checking-updates="checkingUpdates"
+                  class="flex-1 min-h-0"
+                  @update:open="(open: boolean) => (open ? activateSettingsPage() : closeSettingsPage())"
+                  @check-updates="checkUpdates()"
+                />
+                <div v-if="activeTab" v-show="!driverStoreActive && !settingsStore.settingsPageActive" class="flex flex-col flex-1 min-h-0">
+                  <EditorToolbar
+                    v-if="activeTab.mode === 'query' && !isPreviewTab(activeTab)"
+                    :active-tab="activeTab"
+                    :active-connection="activeConnection"
+                    :executable-sql="executableSql"
+                    :can-preview-changes="previewChangesAvailable"
+                    :explain-mode="explainMode"
+                    :block-dangerous-redis-commands="blockDangerousRedisCommands"
+                    :sql-keyword-case="settingsStore.editorSettings.sqlFormatter.keywordCase"
+                    :database-required-signal="databaseRequiredTabId === activeTab.id ? databaseRequiredSignal : 0"
+                    :auto-commit="activeTab.autoCommit ?? true"
+                    :txn-session-id="activeTab?.txnSessionId"
+                    :txn-auto-rolled-back="activeTab?.txnAutoRolledBack"
+                    :oracle-txn-possibly-dirty="activeTab?.oracleTxnPossiblyDirty"
+                    :is-oracle-manual-transaction="isOracleManualTransaction"
+                    @update:explain-mode="(m: 'explain' | 'autotrace') => (explainMode = m)"
+                    @update:block-dangerous-redis-commands="(v: boolean) => (blockDangerousRedisCommands = v)"
+                    @update:auto-commit="
+                      (v: boolean) => {
+                        if (activeTab) queryStore.setAutoCommit(activeTab.id, v);
+                      }
+                    "
+                    @commit="activeTab && queryStore.commitTransaction(activeTab.id)"
+                    @rollback="activeTab && queryStore.rollbackTransaction(activeTab.id)"
+                    @dismiss-txn-rolled-back="activeTab && (activeTab.txnAutoRolledBack = false)"
+                    @execute-pointer-down="captureActiveEditorExecutionSnapshot()"
+                    @execute="requestActiveEditorExecute($event)"
+                    @preview-changes="requestActiveEditorPreviewChanges()"
+                    @multi-execute="requestMultiDbExecute()"
+                    @cancel="cancelActiveExecution()"
+                    @explain="tryExplain()"
+                    @format-sql="formatActiveSql"
+                    @compress-sql="compressActiveSql"
+                    @toggle-sql-keyword-case="toggleSqlKeywordCase"
+                    @save-sql="void openSaveSqlDialog()"
+                    @open-sql="openSqlFile"
+                    @import-result-archive="importResultArchive"
+                    @paste-sql-in-condition="pasteClipboardAsSqlInCondition"
+                    @change-connection="changeActiveConnection"
+                    @change-database="changeActiveDatabase"
+                    @change-catalog="changeActiveCatalog"
+                    @change-schema="changeActiveSchema"
+                    @set-default-database="setActiveDatabaseAsDefault"
+                    @clear-default-database="clearActiveDefaultDatabase"
+                  />
+                  <KeepAlive :max="4">
+                    <ContentArea
+                      ref="contentAreaRef"
+                      :key="activeTab.id"
+                      :active-tab="activeTab"
+                      :active-connection="activeConnection"
+                      :executable-sql="executableSql"
+                      :active-output-view="activeOutputView"
+                      :format-sql-request="formatSqlRequest"
+                      :compress-sql-request="compressSqlRequest"
+                      :selected-sql="selectedSql"
+                      :cursor-pos="cursorPos"
+                      :block-dangerous-redis-commands="blockDangerousRedisCommands"
+                      @update:active-output-view="activeOutputView = $event"
+                      @fix-with-ai="fixWithAi"
+                      @send-selection-to-ai="sendSelectionToAi"
+                      @execute="tryExecute($event)"
+                      @execute-in-new-result-tab="tryExecuteInNewResultTab($event)"
+                      @cancel="cancelActiveExecution()"
+                      @explain="tryExplain()"
+                      @editor-update="(tabId: string, v: string) => queryStore.updateSql(tabId, v)"
+                      @editor-selection-change="(v: string) => (selectedSql = v)"
+                      @editor-cursor-change="(p: number) => (cursorPos = p)"
+                      @preview-changes-available="(v: boolean) => (previewChangesAvailable = v)"
+                      @editor-viewport-change="(tabId: string, viewport: { scrollTop: number; scrollLeft: number }) => queryStore.updateEditorViewport(tabId, viewport)"
+                      @editor-selection-state-change="(tabId: string, selection: { anchor: number; head: number }) => queryStore.updateEditorSelection(tabId, selection)"
+                      @format-error="toast(t('toolbar.formatSqlFailed'))"
+                      @save-sql="void openSaveSqlDialog()"
+                      @reload="(sql, searchText, whereInput, orderBy, limit, offset, intent) => onReloadData(sql, searchText, whereInput, orderBy, limit, offset, intent)"
+                      @paginate="onPaginate"
+                      @sort="onSort"
+                      @execute-sql="onExecuteSql"
+                      @click-table="onClickTable"
+                      @view-table-data="onViewTableData"
+                      @edit-table-structure="onEditTableStructure"
+                      @view-table-ddl="onViewTableDdl"
+                      @open-object-source="onOpenObjectSource"
+                      @open-object-table="
+                        (target) =>
+                          activeTab &&
+                          openObjectBrowserTableTarget({
+                            connectionId: activeTab.connectionId,
+                            database: activeTab.database,
+                            schema: target.schema,
+                            catalog: target.catalog,
+                            tableName: target.tableName,
+                            tableType: target.tableType,
+                          })
+                      "
+                      @object-schema-change="(schema) => activeTab && queryStore.updateSchema(activeTab.id, schema)"
+                      @object-browser-viewport-change="(tabId, viewport) => queryStore.updateObjectBrowserViewport(tabId, viewport)"
+                      @structure-editor-saved="
+                        (commentChanged) =>
+                          activeTab &&
+                          onStructureEditorSaved(
+                            onReloadData,
+                            toast,
+                            {
+                              connectionId: activeTab.connectionId,
+                              database: activeTab.database,
+                              schema: activeTab.schema,
+                              catalog: activeTab.catalog,
+                              tableName: activeTab.structureTableName || '',
+                            },
+                            commentChanged,
+                          )
+                      "
+                      @structure-editor-close="activeTab && queryStore.closeTab(activeTab.id)"
+                      @open-settings="openSettings"
+                      @open-connection-settings="openConnectionSettings"
+                    />
+                  </KeepAlive>
+                </div>
+                <WelcomeScreen
+                  v-else-if="!driverStoreActive && !settingsStore.settingsPageActive"
+                  :connection-stats="connectionStats"
+                  :recent-connections="recentConnections"
+                  :saved-sql-history-items="savedSqlHistoryItems"
+                  :app-version="appVersion"
+                  :has-connections="connectionStore.connections.length > 0"
+                  @open-connection-query="openConnectionQuery"
+                  @open-saved-sql="openSavedSqlFromWelcome"
+                  @new-connection="showConnectionDialog = true"
+                  @new-query="newQuery"
+                  @show-history="openRightSidebarPanel('history')"
+                  @import-config="dialogs.onImportClick"
+                  @open-github="openGitHub"
+                  @open-mcp-guide="openMcpGuide"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div
+            v-if="showAiPanel"
+            v-show="!isZenMode"
+            :class="[isClassicLayout ? 'h-full relative z-30 isolate bg-background' : 'h-full relative z-30 isolate rounded-md border border-border/80 bg-background', isAiPanelMaximized ? 'min-w-0 flex-1' : 'min-w-[180px] max-w-full']"
+            :style="isAiPanelMaximized ? {} : { width: aiPanelWidth + 'px' }"
+          >
+            <div v-if="!isAiPanelMaximized" class="panel-resize-handle panel-resize-handle--left" @mousedown="startAiPanelResize" />
+            <div class="h-full min-h-0 overflow-hidden rounded-[inherit]">
+              <AiAssistant
+                v-if="aiPanelReady"
+                ref="aiAssistantRef"
+                :tab="activeTab"
+                :connection="activeConnection"
+                :maximized="isAiPanelMaximized"
+                @append-sql="onAiAppendSql"
+                @execute-sql="onAiExecuteSql"
+                @temp-run-sql="onAiTempRunSql"
+                @request-auto-execute-sql="onAiRequestAutoExecuteSql"
+                @insert-redis-command="(command: string) => routeAiRedisCommand(command, false)"
+                @execute-redis-command="(command: string) => routeAiRedisCommand(command, true)"
+                @open-explain-plan="onAiOpenExplainPlan"
+                @toggle-maximize="toggleAiPanelMaximized"
+                @close="closeRightSidebarPanel('ai')"
+              />
+            </div>
+          </div>
+
+          <div v-if="showHistory" v-show="!isAiPanelMaximized && !isZenMode" :class="isClassicLayout ? 'h-full shrink-0 relative z-30 isolate bg-background' : 'h-full shrink-0 relative z-30 isolate rounded-md border border-border/80 bg-background'" :style="{ width: historyWidth + 'px' }">
+            <div class="panel-resize-handle panel-resize-handle--left" @mousedown="startHistoryResize" />
+            <div class="h-full min-h-0 overflow-hidden rounded-[inherit]">
+              <QueryHistory :current-connection-id="activeTab?.connectionId" :current-database="activeTab?.database" @restore="restoreHistorySql" @analyze-ai="analyzeHistoryWithAi" @close="closeRightSidebarPanel('history')" />
+            </div>
+          </div>
+
+          <div v-if="showSqlLibraryPanel" v-show="!isAiPanelMaximized && !isZenMode" :class="isClassicLayout ? 'h-full shrink-0 relative z-30 isolate bg-background' : 'h-full shrink-0 relative z-30 isolate rounded-md border border-border/80 bg-background'" :style="{ width: sqlLibraryWidth + 'px' }">
+            <div class="panel-resize-handle panel-resize-handle--left" @mousedown="startSqlLibraryResize" />
+            <div class="h-full min-h-0 overflow-hidden rounded-[inherit]">
+              <SqlLibraryPanel @close="closeRightSidebarPanel('sqlLibrary')" />
+            </div>
+          </div>
+
+          <div v-if="showSqlFilePanel" v-show="!isAiPanelMaximized && !isZenMode" :class="isClassicLayout ? 'h-full shrink-0 relative z-30 isolate bg-background' : 'h-full shrink-0 relative z-30 isolate rounded-md border border-border/80 bg-background'" :style="{ width: sqlFilePanelWidth + 'px' }">
+            <div class="panel-resize-handle panel-resize-handle--left" @mousedown="startSqlFilePanelResize" />
+            <div class="h-full min-h-0 overflow-hidden rounded-[inherit]">
+              <SqlFilePanel @close="closeRightSidebarPanel('sqlFile')" />
+            </div>
+          </div>
+        </div>
+
+        <AppDialogs
+          :show-connection-dialog="showConnectionDialog"
+          :connection-prefill="connectionDialogPrefill"
+          :connection-initial-tab="connectionDialogInitialTab"
+          :show-danger-dialog="showDangerDialog"
+          :danger-sql="dangerSql"
+          :suppress-danger-confirm="suppressDangerConfirm"
+          :active-database-type="activeConnection?.db_type"
+          :show-sql-parameter-dialog="showSqlParameterDialog"
+          :sql-parameter-source-sql="sqlParameterSourceSql"
+          :sql-parameter-names="sqlParameterNames"
+          :sql-parameter-database-type="sqlParameterDatabaseType"
+          :sql-parameter-enabled-syntaxes="sqlParameterEnabledSyntaxes"
+          @update:show-connection-dialog="setConnectionDialogOpen"
+          @update:show-danger-dialog="showDangerDialog = $event"
+          @update:suppress-danger-confirm="suppressDangerConfirm = $event"
+          @update:show-sql-parameter-dialog="showSqlParameterDialog = $event"
+          @danger-confirm="onDangerConfirm"
+          @sql-parameters-confirm="onSqlParametersConfirm"
+          @connect-started="(name: string) => toast(t('connection.connecting', { name }), 30000)"
+          @connect-succeeded="(name: string) => toast(t('connection.connectSuccess', { name }), 2000)"
+          @connect-failed="
+            (msg: string) =>
+              toast(
+                t('connection.connectFailed', {
+                  message: translateBackendError(t, msg),
+                }),
+                5000,
+              )
+          "
+          @open-driver-store="
+            setConnectionDialogOpen(false);
+            openDriverStorePage($event);
+          "
+          @open-tunnel-profile-settings="
+            setConnectionDialogOpen(false);
+            openSettings('tunnels');
+          "
+          @open-lineage-target="openLineageTarget"
+          @open-database-search-target="openDatabaseSearchTarget"
+          @open-diagram-target="openDiagramTarget"
+        />
+        <MultiDbExecuteDialog
+          v-model:open="showMultiDbExecuteDialog"
+          :sql="multiExecuteSql"
+          :source-tab-id="multiExecuteSourceTabId"
+          :database-type="multiExecuteDatabaseType"
+          :initial-targets="multiExecuteInitialTargets"
+          :launch-id="multiExecuteLaunchId"
+          :execute-target="executeMultiDbTarget"
+          :cancel-target="cancelMultiDbTarget"
+          :cancel-pending="cancelPendingMultiDbTarget"
+          :source-offset="multiExecuteSourceOffset"
+        />
+        <UpdateDialog
+          v-if="showUpdateDialog"
+          v-model:open="showUpdateDialog"
+          :update-info="updateInfo"
+          :update-check-message="updateCheckMessage"
+          :checking-updates="checkingUpdates"
+          :update-check-failed="updateCheckFailed"
+          :update-download-source="settingsStore.editorSettings.updateDownloadSource"
+          :is-downloading-update="isDownloadingUpdate"
+          :download-progress="downloadProgress"
+          :update-downloaded="updateDownloaded"
+          :is-installing-update="isInstallingUpdate"
+          :update-ready="updateReady"
+          :is-ignoring-update="isIgnoringUpdate"
+          :active-task-count="activeUpdateTaskCount"
+          @open-latest-release="openLatestRelease"
+          @change-download-source="changeUpdateDownloadSource"
+          @download-in-background="downloadUpdateInBackground"
+          @cancel-download="cancelDownload"
+          @install-downloaded="installDownloadedUpdate"
+          @restart="restartApp"
+          @ignore-version="ignoreCurrentVersion"
+        />
+        <ExternalSqlFileChangeDialog :prompt="externalSqlFilePrompt" @decide="externalSqlFileChanges.resolvePrompt" />
+        <CloseActionPromptDialog v-if="isDesktop && showCloseActionPrompt" :open="showCloseActionPrompt" @update:open="handleCloseActionPromptOpenChange" @quit="chooseQuit" @minimize="chooseMinimize" />
+        <AiRunsClosePromptDialog v-if="isDesktop && showAiRunsClosePrompt" v-model:open="showAiRunsClosePrompt" :count="blockingAiRunCount" @cancel="cancelPendingAppClose" @quit="confirmQuitWithActiveAiRuns" />
+        <QuickOpenDialog :open="showQuickOpen" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
+        <TabSwitcherDialog :open="showTabSwitcher" :tabs="tabSwitcherTabs" :selected-index="tabSwitcherIndex" :shortcut-hint="tabSwitcherShortcutHint" @update:open="handleTabSwitcherOpenChange" @update:selected-index="tabSwitcherIndex = $event" @select="handleTabSwitcherSelect" />
+      </div>
+      <Teleport to="body">
+        <FileText
+          v-if="sqlLibraryFlyAnimation"
+          :key="sqlLibraryFlyAnimation.id"
+          aria-hidden="true"
+          class="sql-library-fly-icon pointer-events-none fixed left-0 top-0 z-[100000] h-6 w-6 text-primary"
+          :style="{
+            '--sql-library-fly-from-x': `${sqlLibraryFlyAnimation.fromX}px`,
+            '--sql-library-fly-from-y': `${sqlLibraryFlyAnimation.fromY}px`,
+            '--sql-library-fly-to-x': `${sqlLibraryFlyAnimation.toX}px`,
+            '--sql-library-fly-to-y': `${sqlLibraryFlyAnimation.toY}px`,
+          }"
+          @animationend="finishSqlLibraryFlyAnimation(sqlLibraryFlyAnimation.id)"
+        />
+        <Transition name="toast">
+          <div v-if="toastVisible" class="fixed bottom-6 inset-x-0 mx-auto z-99999 w-max max-w-[90vw] sm:max-w-3xl px-4 py-2 rounded-lg bg-foreground text-background text-sm shadow-lg select-text whitespace-pre-wrap break-words">
+            <span>{{ toastMessage }}</span>
+            <button v-if="toastAction" type="button" class="ml-3 shrink-0 rounded border border-background/40 bg-background/10 px-2 py-0.5 text-xs font-medium hover:bg-background/20" @click="toastAction.onClick()">
+              {{ toastAction.label }}
+            </button>
+          </div>
+        </Transition>
+      </Teleport>
+
+      <Dialog
+        :open="showSaveSqlDialog"
+        @update:open="
+          (open: boolean) => {
+            showSaveSqlDialog = open;
+            if (!open) {
+              invalidateSaveSqlFolderSelection();
+              if (pendingSaveAndCloseTabId) cancelPendingSaveAndClose();
+            }
+          }
+        "
+      >
+        <DialogContent class="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>{{ t("savedSql.saveToLibrary") }}</DialogTitle>
+          </DialogHeader>
+          <div class="space-y-3">
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-muted-foreground">{{ t("savedSql.fileName") }}</label>
+              <Input v-model="saveSqlName" @keydown.enter.prevent="confirmSaveSqlToLibrary" />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-muted-foreground">{{ t("savedSql.folder") }}</label>
+              <SearchableSelect
+                :model-value="saveSqlFolderId"
+                :options="[ROOT_SAVED_SQL_FOLDER, ...saveSqlFolders.map((f) => f.id)]"
+                :display-name="saveSqlFolderDisplayName"
+                :normalize-custom="saveSqlFolderNormalizeCustom"
+                :placeholder="t('savedSql.folderPlaceholder')"
+                :search-placeholder="t('savedSql.searchPlaceholder')"
+                :empty-text="t('common.noResults')"
+                :disabled="saveSqlFolderCreationPending"
+                allow-custom
+                trigger-variant="outline"
+                trigger-class="h-8 w-full max-w-none text-sm"
+                content-class="w-[var(--reka-popover-trigger-width)]"
+                @update:model-value="handleSaveSqlFolderSelect"
+              >
+                <template #custom-option-label="{ value }">
+                  <span class="truncate">{{ t("savedSql.createFolderOption", { name: value }) }}</span>
+                </template>
+              </SearchableSelect>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button v-if="isDesktop" variant="secondary" @click="saveActiveSqlAsLocalFile">{{ t("savedSql.saveToFile") }}</Button>
+            <Button variant="outline" @click="cancelPendingSaveAndClose()">{{ t("dangerDialog.cancel") }}</Button>
+            <Button ref="saveSqlConfirmButtonRef" :disabled="saveSqlFolderCreationPending || !saveSqlName.trim()" @click="confirmSaveSqlToLibrary">{{ t("savedSql.save") }}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <QueryEditorDdlViewDialog
+        v-if="queryEditorDdlTarget"
+        v-model:open="showQueryEditorDdlDialog"
+        :connection-id="queryEditorDdlTarget.connectionId"
+        :database="queryEditorDdlTarget.database"
+        :catalog="queryEditorDdlTarget.catalog"
+        :schema="queryEditorDdlTarget.schema"
+        :table-name="queryEditorDdlTarget.tableName"
+        :object-type="queryEditorDdlTarget.objectType"
+        :database-type="queryEditorDdlDatabaseType"
+        :dialect="queryEditorDdlDialect"
+      />
+      <QueryEditorObjectSourceDialog
+        v-if="queryEditorObjectSourceTarget"
+        v-model:open="showQueryEditorObjectSourceDialog"
+        :connection-id="queryEditorObjectSourceTarget.connectionId"
+        :database="queryEditorObjectSourceTarget.database"
+        :schema="queryEditorObjectSourceTarget.schema"
+        :name="queryEditorObjectSourceTarget.name"
+        :signature="queryEditorObjectSourceTarget.signature"
+        :relation-name="queryEditorObjectSourceTarget.relationName"
+        :object-type="queryEditorObjectSourceTarget.objectType"
+        :initial-editing="queryEditorObjectSourceTarget.initialEditing"
+        :database-type="queryEditorObjectSourceDatabaseType"
+        :dialect="queryEditorObjectSourceDialect"
+        :format-dialect="queryEditorObjectSourceFormatDialect"
+        @saved="onQueryEditorObjectSourceSaved"
+      />
+    </TooltipProvider>
+    <div id="dbx-query-editor-tooltip-root" class="fixed left-0 top-0 z-[70] h-0 w-0 overflow-visible" />
+  </div>
+</template>
+
+<style scoped>
+@keyframes sql-library-fly-in {
+  0% {
+    opacity: 1;
+    transform: translate3d(var(--sql-library-fly-from-x), var(--sql-library-fly-from-y), 0) translate(-50%, -50%) scale(0.78);
+  }
+  90% {
+    opacity: 1;
+    transform: translate3d(var(--sql-library-fly-to-x), var(--sql-library-fly-to-y), 0) translate(-50%, -50%) scale(0.5);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--sql-library-fly-to-x), var(--sql-library-fly-to-y), 0) translate(-50%, -50%) scale(0.42);
+  }
+}
+
+.sql-library-fly-icon {
+  animation: sql-library-fly-in 560ms cubic-bezier(0.45, 0, 0.55, 1) both;
+  will-change: transform, opacity;
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: 0.25s ease;
+  transition-property: transform, opacity;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(100%) scale(0.95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sql-library-fly-icon {
+    animation: none;
+  }
+}
+</style>

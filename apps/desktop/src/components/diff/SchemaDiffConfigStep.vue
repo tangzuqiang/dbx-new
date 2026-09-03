@@ -1,0 +1,644 @@
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
+import ConnectionTreeSelect from "@/components/connection/ConnectionTreeSelect.vue";
+import TableMultiSelect from "@/components/diff/TableMultiSelect.vue";
+import { buildSameNameTableMatches } from "@/lib/diff/sameNameTableMatch";
+import { createSchemaDiffTableListCoordinator, reconcileSchemaDiffSelectedTables, shouldLoadSchemaDiffTableList, type SchemaDiffTableIdentity, type SchemaDiffTableListLoader, type SchemaDiffTableSide } from "@/lib/schema/schemaDiffTableList";
+import { useConnectionStore } from "@/stores/connectionStore";
+import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
+import * as api from "@/lib/backend/api";
+import { isSchemaAware } from "@/lib/database/databaseCapabilities";
+import { fetchNamespaceOptionsForConnection } from "@/composables/useDatabaseOptions";
+import { ArrowLeftRight, GitCompareArrows, Save, FolderOpen, Settings, X } from "@lucide/vue";
+import type { SchemaDiffConfig, SchemaDiffCompareOptions, FieldMappingEntry } from "@/types/schemaDiff";
+
+const { t } = useI18n();
+const store = useConnectionStore();
+
+const props = defineProps<{
+  configs: SchemaDiffConfig[];
+  activeConfigId: string;
+  sourceConnectionId: string;
+  sourceDatabase: string;
+  sourceSchema: string;
+  targetConnectionId: string;
+  targetDatabase: string;
+  targetSchema: string;
+  ignoreComments: boolean;
+  options: SchemaDiffCompareOptions;
+  selectedTables?: string[];
+  tableListLoader: SchemaDiffTableListLoader;
+  loading: boolean;
+  recentConfigs: SchemaDiffConfig[];
+}>();
+
+const emit = defineEmits<{
+  (e: "update:sourceConnectionId", value: string): void;
+  (e: "update:sourceDatabase", value: string): void;
+  (e: "update:sourceSchema", value: string): void;
+  (e: "update:targetConnectionId", value: string): void;
+  (e: "update:targetDatabase", value: string): void;
+  (e: "update:targetSchema", value: string): void;
+  (e: "update:ignoreComments", value: boolean): void;
+  (e: "update:fieldMappings", value: FieldMappingEntry[]): void;
+  (e: "open-field-mapping"): void;
+  (e: "compare"): void;
+  (e: "saveConfig"): void;
+  (e: "loadConfig"): void;
+  (e: "showOptions"): void;
+  (e: "swap"): void;
+  (e: "loadHistoryConfig", config: SchemaDiffConfig): void;
+  (e: "deleteHistoryConfig", configId: string): void;
+  (e: "update:selectedTables", value?: string[]): void;
+}>();
+
+const sourceDatabases = ref<string[]>([]);
+const sourceSchemas = ref<string[]>([]);
+const targetDatabases = ref<string[]>([]);
+const targetSchemas = ref<string[]>([]);
+const sourceDbVersion = ref<string | null>(null);
+const targetDbVersion = ref<string | null>(null);
+
+const sqlConnections = computed(() => store.connections.filter((c: any) => !["mongodb", "redis", "elasticsearch", "easysearch", "meilisearch", "etcd", "zookeeper", "consul", "mq", "nacos"].includes(c.db_type)));
+
+const sourceConfig = computed(() => store.getConfig(props.sourceConnectionId));
+const targetConfig = computed(() => store.getConfig(props.targetConnectionId));
+
+const sourceDbType = computed(() => sourceConfig.value?.db_type || "");
+const targetDbType = computed(() => targetConfig.value?.db_type || "");
+const showFieldMapping = computed(() => sourceDbType.value && targetDbType.value && sourceDbType.value !== targetDbType.value);
+const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
+
+// ---- Visual (explicit) table selection ----
+const sourceTableList = ref<string[]>([]);
+const targetTableList = ref<string[]>([]);
+const restrictTables = ref(false);
+const localSelectedTables = ref<string[]>([]);
+
+const matchResult = computed(() => buildSameNameTableMatches(localSelectedTables.value, targetTableList.value));
+const missingTargetTables = computed(() => matchResult.value.missing);
+
+// Keep the visual restriction in sync with the (persisted) config options.
+// `undefined` = not restricted (compare all tables, then regex filter);
+// an array = explicitly restricted to exactly those tables.
+watch(
+  () => props.selectedTables,
+  (value) => {
+    restrictTables.value = Array.isArray(value);
+    localSelectedTables.value = value && Array.isArray(value) ? [...value] : [];
+  },
+  { immediate: true },
+);
+
+function handleToggleRestrict(enabled: boolean) {
+  restrictTables.value = enabled;
+  emit("update:selectedTables", enabled ? [...localSelectedTables.value] : undefined);
+}
+
+function handleUpdateSelectedTables(value: string[]) {
+  localSelectedTables.value = value;
+  if (restrictTables.value) emit("update:selectedTables", [...value]);
+}
+
+function clearUnavailableTableSelection() {
+  sourceTableList.value = [];
+  targetTableList.value = [];
+  if (props.selectedTables === undefined && !restrictTables.value && localSelectedTables.value.length === 0) return;
+  restrictTables.value = false;
+  localSelectedTables.value = [];
+  emit("update:selectedTables", undefined);
+}
+
+function getTableIdentity(side: SchemaDiffTableSide): SchemaDiffTableIdentity {
+  return side === "source" ? { connectionId: props.sourceConnectionId, database: props.sourceDatabase, schema: props.sourceSchema } : { connectionId: props.targetConnectionId, database: props.targetDatabase, schema: props.targetSchema };
+}
+
+function isTableIdentityReady(side: SchemaDiffTableSide): boolean {
+  const identity = getTableIdentity(side);
+  const config = side === "source" ? sourceConfig.value : targetConfig.value;
+  return !!identity.connectionId && !!identity.database && (!isSchemaAware(config?.db_type) || !!identity.schema);
+}
+
+function setTableList(side: SchemaDiffTableSide, tables: Array<{ name?: string }>) {
+  const names = tables.map((entry) => entry.name ?? "").filter(Boolean);
+  if (side === "source") sourceTableList.value = names;
+  else targetTableList.value = names;
+}
+
+function reconcileSelectedTablesAfterSuccessfulLoad(tables: Array<{ name?: string }>) {
+  if (!restrictTables.value || !Array.isArray(props.selectedTables)) return;
+
+  const availableTables = tables.map((entry) => entry.name ?? "").filter(Boolean);
+  const nextSelectedTables = reconcileSchemaDiffSelectedTables(props.selectedTables, availableTables);
+  if (nextSelectedTables.length === props.selectedTables.length && nextSelectedTables.every((table, index) => table === props.selectedTables?.[index])) return;
+
+  localSelectedTables.value = nextSelectedTables;
+  emit("update:selectedTables", nextSelectedTables);
+}
+
+const tableListCoordinator = createSchemaDiffTableListCoordinator({
+  loader: props.tableListLoader,
+  getIdentity: getTableIdentity,
+  setTables: setTableList,
+  onSourceTablesLoaded: reconcileSelectedTablesAfterSuccessfulLoad,
+});
+
+watch(
+  () => [restrictTables.value, props.sourceConnectionId, props.sourceDatabase, props.sourceSchema, sourceDbType.value],
+  () => {
+    const shouldLoad = shouldLoadSchemaDiffTableList("source", restrictTables.value, localSelectedTables.value.length, isTableIdentityReady("source"));
+    tableListCoordinator.refresh("source", shouldLoad).catch(() => {});
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [restrictTables.value, localSelectedTables.value.length, props.targetConnectionId, props.targetDatabase, props.targetSchema, targetDbType.value],
+  () => {
+    const shouldLoad = shouldLoadSchemaDiffTableList("target", restrictTables.value, localSelectedTables.value.length, isTableIdentityReady("target"));
+    tableListCoordinator.refresh("target", shouldLoad).catch(() => {});
+  },
+  { immediate: true },
+);
+
+const canConfigureTableSelection = computed(() => isTableIdentityReady("source"));
+
+const canCompare = computed(() => {
+  const hasSelectedTables = props.selectedTables === undefined || props.selectedTables.length > 0;
+  return props.sourceConnectionId && props.targetConnectionId && props.sourceDatabase && props.targetDatabase && hasSelectedTables && (!isSchemaAware(sourceConfig.value?.db_type) || props.sourceSchema) && (!isSchemaAware(targetConfig.value?.db_type) || props.targetSchema);
+});
+
+async function loadDatabases(connectionId: string, side: "source" | "target") {
+  if (!connectionId) return;
+  try {
+    await store.ensureConnected(connectionId);
+    const config = store.getConfig(connectionId);
+    let dbNames: string[];
+    if (config?.db_type === "dameng") {
+      // 达梦的"数据库"概念对应 schema，使用 fetchNamespaceOptionsForConnection
+      dbNames = await fetchNamespaceOptionsForConnection(connectionId, config);
+    } else {
+      const dbs = await api.listDatabases(connectionId);
+      dbNames = Array.isArray(dbs) ? dbs.map((db: any) => (typeof db === "string" ? db : db.name || db.database)) : [];
+    }
+    if (side === "source") {
+      sourceDatabases.value = dbNames;
+      if (props.sourceDatabase) {
+        await fetchDbVersion(connectionId, props.sourceDatabase, props.sourceSchema, "source");
+        // Ensure schema list is loaded after databases are available (handles race with sourceDatabase watcher)
+        if (isSchemaAware(sourceConfig.value?.db_type)) {
+          await loadSchemas("source");
+        }
+      }
+    } else {
+      targetDatabases.value = dbNames;
+      if (props.targetDatabase) {
+        await fetchDbVersion(connectionId, props.targetDatabase, props.targetSchema, "target");
+        // Ensure schema list is loaded after databases are available (handles race with targetDatabase watcher)
+        if (isSchemaAware(targetConfig.value?.db_type)) {
+          await loadSchemas("target");
+        }
+      }
+    }
+  } catch {
+    if (side === "source") {
+      sourceDatabases.value = [];
+      sourceDbVersion.value = null;
+    } else {
+      targetDatabases.value = [];
+      targetDbVersion.value = null;
+    }
+  }
+}
+
+async function loadSchemas(side: "source" | "target") {
+  const connectionId = side === "source" ? props.sourceConnectionId : props.targetConnectionId;
+  const database = side === "source" ? props.sourceDatabase : props.targetDatabase;
+  const schema = side === "source" ? props.sourceSchema : props.targetSchema;
+  if (!connectionId || !database) return;
+
+  try {
+    await store.ensureConnected(connectionId);
+    const schemas = await api.listSchemas(connectionId, database);
+    if (side === "source") {
+      sourceSchemas.value = schemas;
+    } else {
+      targetSchemas.value = schemas;
+    }
+    await fetchDbVersion(connectionId, database, schema, side);
+  } catch {
+    if (side === "source") {
+      sourceSchemas.value = [];
+    } else {
+      targetSchemas.value = [];
+    }
+  }
+}
+
+watch(
+  () => props.sourceConnectionId,
+  async (id) => {
+    if (id) {
+      await loadDatabases(id, "source");
+    } else {
+      sourceDatabases.value = [];
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.sourceDatabase,
+  async (db) => {
+    if (db && props.sourceConnectionId) {
+      await loadSchemas("source");
+    } else {
+      sourceSchemas.value = [];
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.targetConnectionId,
+  async (id) => {
+    if (id) {
+      await loadDatabases(id, "target");
+    } else {
+      targetDatabases.value = [];
+    }
+  },
+  { immediate: true },
+);
+
+// A visual selection belongs to the current source connection/database/schema. Clear it
+// when that identity changes so a saved table name cannot silently restrict a different
+// source. If the source and selected tables change together, it is a saved-config load;
+// let the selectedTables watcher restore that config instead of clearing it again.
+watch(
+  () => ({
+    source: [props.sourceConnectionId, props.sourceDatabase, props.sourceSchema] as const,
+    selectedTables: props.selectedTables,
+  }),
+  (current, previous) => {
+    if (!isTableIdentityReady("source")) {
+      clearUnavailableTableSelection();
+      return;
+    }
+    if (!previous) return;
+    if (current.source.every((value, index) => value === previous.source[index])) return;
+    if (current.selectedTables !== previous.selectedTables) return;
+    if (current.selectedTables === undefined && !restrictTables.value) return;
+    clearUnavailableTableSelection();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.targetDatabase,
+  async (db) => {
+    if (db && props.targetConnectionId) {
+      await loadSchemas("target");
+    } else {
+      targetSchemas.value = [];
+    }
+  },
+  { immediate: true },
+);
+
+function connectionIconType(connectionId: string) {
+  const c = store.getConfig(connectionId);
+  return c?.driver_profile || c?.db_type || "mysql";
+}
+
+function getConnectionInfo(connectionId: string) {
+  const c = store.getConfig(connectionId);
+  if (!c) return null;
+  return {
+    name: c.name,
+    dbType: c.db_type,
+    host: c.host,
+    port: c.port,
+  };
+}
+
+async function fetchDbVersion(connectionId: string, database: string, schema: string, side: "source" | "target") {
+  try {
+    await store.ensureConnected(connectionId);
+    const config = store.getConfig(connectionId);
+    const dbType = config?.db_type;
+    let sql = "";
+    switch (dbType) {
+      case "postgres":
+      case "opengauss":
+        sql = "SELECT version()";
+        break;
+      case "mysql":
+        sql = "SELECT VERSION()";
+        break;
+      case "sqlite":
+        sql = "SELECT sqlite_version()";
+        break;
+      default:
+        return;
+    }
+    const result = await api.executeQuery(connectionId, database, sql, schema || undefined);
+    if (result.rows && result.rows.length > 0) {
+      const version = String(result.rows[0][0]);
+      if (side === "source") {
+        sourceDbVersion.value = version;
+      } else {
+        targetDbVersion.value = version;
+      }
+    }
+  } catch (e) {
+    console.error(`[fetchDbVersion] Failed to fetch version for ${side}:`, e);
+    if (side === "source") {
+      sourceDbVersion.value = null;
+    } else {
+      targetDbVersion.value = null;
+    }
+  }
+}
+</script>
+
+<template>
+  <div class="space-y-4">
+    <!-- Header -->
+    <div class="flex items-center justify-center gap-4 py-2">
+      <div class="text-center">
+        <div class="text-xs text-muted-foreground">{{ sourceConfig?.name || t("diff.source") }}</div>
+        <div class="text-xs font-medium">{{ sourceDatabase }}{{ sourceSchema ? `.${sourceSchema}` : "" }}</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <DatabaseIcon v-if="sourceConnectionId" :db-type="connectionIconType(sourceConnectionId)" class="w-5 h-5" />
+        <ArrowLeftRight class="w-4 h-4 text-muted-foreground" />
+        <DatabaseIcon v-if="targetConnectionId" :db-type="connectionIconType(targetConnectionId)" class="w-5 h-5" />
+      </div>
+      <div class="text-center">
+        <div class="text-xs text-muted-foreground">{{ targetConfig?.name || t("diff.target") }}</div>
+        <div class="text-xs font-medium">{{ targetDatabase }}{{ targetSchema ? `.${targetSchema}` : "" }}</div>
+      </div>
+    </div>
+
+    <!-- Source / Target Selection -->
+    <div class="grid grid-cols-[1fr_auto_1fr] gap-4 items-start">
+      <!-- Source Side -->
+      <div class="space-y-3">
+        <div class="text-sm font-medium text-blue-500">{{ t("diff.source") }}</div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.connection") }}</Label>
+          <ConnectionTreeSelect
+            :model-value="sourceConnectionId"
+            @update:model-value="(v: string) => $emit('update:sourceConnectionId', v)"
+            :connections="sqlConnections"
+            :layout="store.sidebarLayout"
+            :placeholder="t('diff.selectConnection')"
+            :search-placeholder="t('diff.searchConnection')"
+            :empty-text="t('common.noResults')"
+            trigger-class="dbx-diff-connection-trigger h-8 w-full max-w-none justify-between gap-1.5 rounded-md border border-input bg-transparent px-2.5 text-xs shadow-none hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50"
+            list-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.database") }}</Label>
+          <SearchableSelect
+            :model-value="sourceDatabase"
+            @update:model-value="(v: string) => $emit('update:sourceDatabase', v)"
+            :options="sourceDatabases"
+            :placeholder="t('diff.selectDatabase')"
+            :search-placeholder="t('diff.searchDatabase')"
+            :empty-text="t('common.noResults')"
+            :disabled="!sourceDatabases.length"
+            trigger-variant="outline"
+            trigger-class="h-8 w-full justify-between text-xs"
+            content-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <div v-if="isSchemaAware(sourceConfig?.db_type)" class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.schema") }}</Label>
+          <SearchableSelect
+            :model-value="sourceSchema"
+            @update:model-value="(v: string) => $emit('update:sourceSchema', v)"
+            :options="sourceSchemas"
+            :placeholder="t('diff.selectSchema')"
+            :search-placeholder="t('diff.searchSchema')"
+            :empty-text="t('common.noResults')"
+            :disabled="!sourceSchemas.length"
+            trigger-variant="outline"
+            trigger-class="h-8 w-full justify-between text-xs"
+            content-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <!-- Source Info -->
+        <div v-if="getConnectionInfo(sourceConnectionId)" class="mt-4 p-3 rounded-lg bg-muted/30 border space-y-1.5">
+          <div class="text-xs font-medium text-blue-500">{{ t("diff.info") }}</div>
+          <div class="grid grid-cols-[80px_1fr] gap-x-2 gap-y-0.5 text-xs">
+            <span class="text-muted-foreground">{{ t("diff.connType") }}</span>
+            <span>{{ getConnectionInfo(sourceConnectionId)?.dbType }}</span>
+            <span class="text-muted-foreground">{{ t("diff.connName") }}</span>
+            <span>{{ getConnectionInfo(sourceConnectionId)?.name }}</span>
+            <span class="text-muted-foreground">{{ t("diff.host") }}</span>
+            <span>{{ getConnectionInfo(sourceConnectionId)?.host }}</span>
+            <span class="text-muted-foreground">{{ t("diff.port") }}</span>
+            <span>{{ getConnectionInfo(sourceConnectionId)?.port }}</span>
+            <span class="text-muted-foreground">{{ t("diff.serverVersion") }}</span>
+            <span>{{ sourceDbVersion || "--" }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Swap Button -->
+      <div class="pt-8">
+        <Button variant="ghost" size="icon" class="h-8 w-8" @click="$emit('swap')">
+          <ArrowLeftRight class="w-4 h-4" />
+        </Button>
+      </div>
+
+      <!-- Target Side -->
+      <div class="space-y-3">
+        <div class="text-sm font-medium text-green-500">{{ t("diff.target") }}</div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.connection") }}</Label>
+          <ConnectionTreeSelect
+            :model-value="targetConnectionId"
+            @update:model-value="(v: string) => $emit('update:targetConnectionId', v)"
+            :connections="sqlConnections"
+            :layout="store.sidebarLayout"
+            :placeholder="t('diff.selectConnection')"
+            :search-placeholder="t('diff.searchConnection')"
+            :empty-text="t('common.noResults')"
+            trigger-class="dbx-diff-connection-trigger h-8 w-full max-w-none justify-between gap-1.5 rounded-md border border-input bg-transparent px-2.5 text-xs shadow-none hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50"
+            list-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <div class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.database") }}</Label>
+          <SearchableSelect
+            :model-value="targetDatabase"
+            @update:model-value="(v: string) => $emit('update:targetDatabase', v)"
+            :options="targetDatabases"
+            :placeholder="t('diff.selectDatabase')"
+            :search-placeholder="t('diff.searchDatabase')"
+            :empty-text="t('common.noResults')"
+            :disabled="!targetDatabases.length"
+            trigger-variant="outline"
+            trigger-class="h-8 w-full justify-between text-xs"
+            content-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <div v-if="isSchemaAware(targetConfig?.db_type)" class="space-y-1.5">
+          <Label class="text-xs">{{ t("diff.schema") }}</Label>
+          <SearchableSelect
+            :model-value="targetSchema"
+            @update:model-value="(v: string) => $emit('update:targetSchema', v)"
+            :options="targetSchemas"
+            :placeholder="t('diff.selectSchema')"
+            :search-placeholder="t('diff.searchSchema')"
+            :empty-text="t('common.noResults')"
+            :disabled="!targetSchemas.length"
+            trigger-variant="outline"
+            trigger-class="h-8 w-full justify-between text-xs"
+            content-class="w-[var(--reka-popover-trigger-width)]"
+          />
+        </div>
+
+        <!-- Target Info -->
+        <div v-if="getConnectionInfo(targetConnectionId)" class="mt-4 p-3 rounded-lg bg-muted/30 border space-y-1.5">
+          <div class="text-xs font-medium text-green-500">{{ t("diff.info") }}</div>
+          <div class="grid grid-cols-[80px_1fr] gap-x-2 gap-y-0.5 text-xs">
+            <span class="text-muted-foreground">{{ t("diff.connType") }}</span>
+            <span>{{ getConnectionInfo(targetConnectionId)?.dbType }}</span>
+            <span class="text-muted-foreground">{{ t("diff.connName") }}</span>
+            <span>{{ getConnectionInfo(targetConnectionId)?.name }}</span>
+            <span class="text-muted-foreground">{{ t("diff.host") }}</span>
+            <span>{{ getConnectionInfo(targetConnectionId)?.host }}</span>
+            <span class="text-muted-foreground">{{ t("diff.port") }}</span>
+            <span>{{ getConnectionInfo(targetConnectionId)?.port }}</span>
+            <span class="text-muted-foreground">{{ t("diff.serverVersion") }}</span>
+            <span>{{ targetDbVersion || "--" }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison Scope -->
+    <div class="space-y-3 rounded-lg border bg-muted/20 p-3">
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between gap-2">
+          <Label class="text-xs font-medium">{{ t("diff.tableSelection") }}</Label>
+          <Button v-if="restrictTables || canConfigureTableSelection" variant="ghost" size="sm" class="h-6 px-2 text-xs" @click="handleToggleRestrict(!restrictTables)">
+            {{ restrictTables ? t("diff.compareAllTables") : t("diff.chooseTables") }}
+          </Button>
+        </div>
+        <div v-if="!restrictTables" class="text-[11px] text-muted-foreground">
+          {{ t("diff.tableSelectionUnrestricted") }}
+        </div>
+        <TableMultiSelect
+          v-if="restrictTables && canConfigureTableSelection"
+          :key="`${sourceConnectionId}.${sourceDatabase}.${sourceSchema}`"
+          :model-value="localSelectedTables"
+          @update:model-value="handleUpdateSelectedTables"
+          :tables="sourceTableList"
+          :title="t('diff.sourceTables')"
+          :empty-text="t('dataCompare.noTables')"
+        />
+      </div>
+
+      <!-- Target Same-Name Match -->
+      <div v-if="restrictTables && localSelectedTables.length && canConfigureTableSelection && isTableIdentityReady('target')" class="space-y-1.5 rounded-lg border p-3 text-xs">
+        <div class="font-medium">{{ t("diff.autoMatchHint") }}</div>
+        <div class="text-muted-foreground">
+          {{ t("diff.matchedTables", { matched: matchResult.matched.length, total: localSelectedTables.length }) }}
+        </div>
+        <div v-if="missingTargetTables.length" class="text-destructive">
+          {{ t("diff.missingTargetTables", { tables: missingTargetTables.join(", ") }) }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Options -->
+    <div class="flex items-center gap-2 p-3 rounded-lg border bg-muted/20">
+      <input id="schema-diff-ignore-comments" :checked="ignoreComments" type="checkbox" class="accent-primary" @change="$emit('update:ignoreComments', ($event.target as HTMLInputElement).checked)" />
+      <Label for="schema-diff-ignore-comments" class="cursor-pointer text-xs">
+        {{ t("diff.ignoreComments") }}
+      </Label>
+    </div>
+
+    <!-- Recent Configs Dropdown -->
+    <div v-if="recentConfigs.length > 0" class="flex items-center gap-2">
+      <Label class="text-xs text-muted-foreground">{{ t("diff.recentConfigs") }}</Label>
+      <Select
+        :model-value="''"
+        @update:model-value="
+          (v: any) => {
+            const config = recentConfigs.find((c) => c.id === v);
+            if (config) $emit('loadHistoryConfig', config);
+          }
+        "
+      >
+        <SelectTrigger class="h-8 text-xs w-[280px]">
+          <SelectValue :placeholder="t('diff.selectRecentConfig')" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem v-for="config in recentConfigs" :key="config.id" :value="config.id" class="pr-8">
+            <div class="flex items-center justify-between w-full gap-2">
+              <div class="flex flex-col gap-0.5 min-w-0">
+                <span class="text-xs font-medium truncate">{{ config.name }}</span>
+                <span class="text-[10px] text-muted-foreground truncate">
+                  {{ store.getConfig(config.sourceConnectionId)?.name || config.sourceConnectionId }}
+                  /{{ config.sourceDatabase }}{{ config.sourceSchema ? `.${config.sourceSchema}` : "" }}
+                  →
+                  {{ store.getConfig(config.targetConnectionId)?.name || config.targetConnectionId }}
+                  /{{ config.targetDatabase }}{{ config.targetSchema ? `.${config.targetSchema}` : "" }}
+                </span>
+              </div>
+              <button class="shrink-0 p-1 rounded hover:bg-destructive/10 hover:text-destructive transition-colors" @click.stop="$emit('deleteHistoryConfig', config.id)">
+                <X class="w-3 h-3" />
+              </button>
+            </div>
+          </SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+
+    <!-- Bottom Actions -->
+    <div class="flex items-center justify-between pt-2">
+      <div class="flex items-center gap-2">
+        <Button variant="outline" size="sm" @click="$emit('saveConfig')">
+          <Save class="w-3.5 h-3.5 mr-1" />
+          {{ t("diff.saveConfig") }}
+        </Button>
+        <Button variant="outline" size="sm" @click="$emit('loadConfig')">
+          <FolderOpen class="w-3.5 h-3.5 mr-1" />
+          {{ t("diff.loadConfig") }}
+        </Button>
+        <Button variant="outline" size="sm" @click="$emit('showOptions')">
+          <Settings class="w-3.5 h-3.5 mr-1" />
+          {{ t("diff.options") }}
+        </Button>
+        <Button v-if="showFieldMapping" variant="outline" size="sm" @click="$emit('open-field-mapping')">
+          <ArrowLeftRight class="w-3.5 h-3.5 mr-1" />
+          {{ t("diff.openFieldMapping") }}
+          <span v-if="activeFieldMappings.length > 0" class="ml-1 inline-flex items-center justify-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{{ activeFieldMappings.length }}</span>
+        </Button>
+      </div>
+      <Button size="sm" :disabled="!canCompare || loading" @click="$emit('compare')">
+        <GitCompareArrows class="w-3.5 h-3.5 mr-1" />
+        {{ loading ? t("common.loading") : t("diff.compare") }}
+      </Button>
+    </div>
+  </div>
+</template>
