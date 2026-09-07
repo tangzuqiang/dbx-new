@@ -108,6 +108,7 @@ temp/
 .dlp-quarantine/
 outputs/
 target-ai-write-confirmation/
+!target/release/bundle/nsis/*.exe
 
 # Code review tool artifacts
 review_diff.json
