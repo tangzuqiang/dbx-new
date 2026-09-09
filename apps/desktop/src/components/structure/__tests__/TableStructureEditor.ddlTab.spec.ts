@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   loadObjectMetadataFacet: vi.fn(),
   invalidateObjectMetadataCache: vi.fn(),
   invalidateTableMetadataCache: vi.fn(),
+  copyToClipboard: vi.fn(),
   toast: vi.fn(),
 }));
 
@@ -277,6 +278,7 @@ vi.mock("@/lib/metadata/objectDdlCache", () => ({
 }));
 vi.mock("@/lib/metadata/objectMetadataCache", () => ({ loadObjectMetadataFacet: mocks.loadObjectMetadataFacet, invalidateObjectMetadataCache: mocks.invalidateObjectMetadataCache }));
 vi.mock("@/lib/metadata/tableMetadataCache", () => ({ invalidateTableMetadataCache: mocks.invalidateTableMetadataCache }));
+vi.mock("@/lib/common/clipboard", () => ({ copyToClipboard: mocks.copyToClipboard }));
 vi.mock("@/lib/backend/api", () => ({
   executeQuery: mocks.executeQuery,
   executeBatch: mocks.executeBatch,
@@ -379,6 +381,7 @@ beforeEach(() => {
   mocks.listDataTypes.mockResolvedValue([]);
   mocks.getTablePartitionStatus.mockResolvedValue({ isPartitionedParent: false, isPartition: false });
   mocks.getTableOwner.mockResolvedValue("");
+  mocks.copyToClipboard.mockResolvedValue(undefined);
   mocks.buildTableOwnerChangeSql.mockResolvedValue({ statements: [], warnings: [] });
   mocks.buildTableStructureChangeSql.mockResolvedValue({ statements: [], warnings: [] });
   mocks.loadObjectDdl.mockResolvedValue({ ddl: TABLE_DDL, cacheStatus: "remote" });
@@ -402,6 +405,21 @@ afterEach(() => {
 });
 
 describe("TableStructureEditor DDL tab", () => {
+  it("shows a copy icon after refresh on the DDL tab and copies the visible DDL", async () => {
+    const root = await mountStructureEditor();
+
+    expect(root.querySelector("[data-structure-ddl-copy]")).toBeNull();
+    await openDdlTab(root);
+
+    const copyButton = root.querySelector<HTMLButtonElement>("[data-structure-ddl-copy]");
+    expect(copyButton).not.toBeNull();
+    expect(copyButton?.getAttribute("aria-label")).toBe("grid.copyDdl");
+    copyButton?.click();
+
+    await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith(TABLE_DDL));
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.ddlCopied", 2000);
+  });
+
   it("keeps the DDL rendered when the tab is left and revisited", async () => {
     // Regression for #7818/#7778: the second visit re-mounts the pane one tick
     // after the tab activates, and nothing re-fetches (the DDL is already

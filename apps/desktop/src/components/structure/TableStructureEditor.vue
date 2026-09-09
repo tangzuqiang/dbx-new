@@ -3992,6 +3992,19 @@ watch(
         <RefreshCw :class="structureIconClass" />
         {{ t("structureEditor.refresh") }}
       </Button>
+      <Button
+        v-if="!isCreateMode && activeTab === 'ddl'"
+        variant="ghost"
+        size="icon"
+        :class="structureIconButtonClass"
+        :disabled="ddlLoading || !(ddlDraft ?? ddlContent).trim()"
+        :title="t('grid.copyDdl')"
+        :aria-label="t('grid.copyDdl')"
+        data-structure-ddl-copy
+        @click="copyDdlContent"
+      >
+        <Copy :class="structureIconClass" />
+      </Button>
     </div>
 
     <div v-if="isCreateMode" class="flex shrink-0 items-center gap-2">
