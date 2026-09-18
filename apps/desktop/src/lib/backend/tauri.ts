@@ -3887,6 +3887,24 @@ export async function mongoParseShellCommand(source: string): Promise<MongoComma
   return normalizeRustMongoCommand(raw);
 }
 
+export interface MongoshStatus {
+  installed: boolean;
+  version: string | null;
+}
+
+export interface MongoshResult {
+  value: unknown;
+  output: string;
+}
+
+export async function mongoShellStatus(): Promise<MongoshStatus> {
+  return invoke("mongo_shell_status");
+}
+
+export async function mongoExecuteMongosh(connectionId: string, database: string, source: string, executionId?: string): Promise<MongoshResult> {
+  return invoke("mongo_execute_mongosh", { connectionId, database, source, executionId });
+}
+
 export async function documentFindDocuments(
   connectionId: string,
   database: string,

@@ -3841,6 +3841,14 @@ export async function mongoParseShellCommand(source: string): Promise<MongoComma
   return normalizeRustMongoCommand(raw);
 }
 
+export async function mongoShellStatus(): Promise<{ installed: boolean; version: string | null }> {
+  return { installed: false, version: null };
+}
+
+export async function mongoExecuteMongosh(_connectionId: string, _database: string, _source: string, _executionId?: string): Promise<{ value: unknown; output: string }> {
+  throw new Error("mongosh is available only in the desktop app");
+}
+
 export async function mongoFindOne(connectionId: string, database: string, collection: string, filter?: string, projection?: string, options?: string, executionId?: string): Promise<MongoDocumentResult> {
   return post("/api/mongo/find-one", {
     connectionId,

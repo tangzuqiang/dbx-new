@@ -147,6 +147,8 @@ export default {
     execute: "Execute",
     executeShortcut: "Execute selection/query ({shortcut})",
     stopQuery: "Stop query",
+    mongoshInstalled: "mongosh installed",
+    mongoshInstalledHint: "mongosh {version} was found on PATH. MongoDB queries use the local mongosh JavaScript runtime, except on read-only connections.",
     explainPlan: "Explain plan",
     stopExplain: "Stop explain",
     autotrace: "Autotrace (executes the query)",
@@ -6587,7 +6589,7 @@ export default {
     sidebarTableSearchEnabledDescription: "Show a local table search box under expanded databases, schemas, or table groups so each scope can filter tables independently.",
     sidebarObjectInfoMode: "Sidebar supplementary info",
     sidebarObjectInfoModeDescription:
-      "Choose comments, object sizes, or no supplementary text after names. Comments and sizes are mutually exclusive. Database totals currently support PostgreSQL; table sizes support MySQL, PostgreSQL, GaussDB, KingbaseES, GBase 8a, SQL Server, Oracle, Dameng, and ClickHouse.",
+      "Choose comments, object sizes, or no supplementary text after names. Comments and sizes are mutually exclusive. Database totals currently support PostgreSQL; table sizes support MySQL, PostgreSQL, GaussDB, KingbaseES, GBase 8a, SQL Server, Oracle, Dameng, and ClickHouse. MongoDB collection sizes are also supported.",
     sidebarObjectInfoModeCommentInline: "Comments (after name)",
     sidebarObjectInfoModeCommentAligned: "Comments (align siblings)",
     sidebarObjectInfoModeCommentRight: "Comments (align right)",

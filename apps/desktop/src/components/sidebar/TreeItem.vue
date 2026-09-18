@@ -858,7 +858,7 @@ function refreshTrailingCommentMeasurement() {
 }
 
 function formattedObjectStorage(): string {
-  if (settingsStore.editorSettings.sidebarObjectInfoMode !== "size" || (activeNode.value.type !== "database" && activeNode.value.type !== "table" && activeNode.value.type !== "materialized_view")) return "";
+  if (settingsStore.editorSettings.sidebarObjectInfoMode !== "size" || (activeNode.value.type !== "database" && activeNode.value.type !== "table" && activeNode.value.type !== "materialized_view" && activeNode.value.type !== "mongo-collection")) return "";
   return formatSidebarObjectStorage(activeNode.value.sizeBytes);
 }
 
@@ -1534,6 +1534,9 @@ function onKeydown(event: KeyboardEvent) {
               ]"
               >{{ visibleLabel(node) }}</span
             >
+            <Badge v-if="(node.type === 'database' || node.type === 'mongo-db') && (node.tableCount != null || node.tableCountLoading)" variant="secondary" class="h-4 shrink-0 px-1.5 text-[10px] tabular-nums">
+              {{ node.tableCount ?? '…' }}
+            </Badge>
             <span v-if="treeNodeSecondaryValue(node)" class="min-w-0 max-w-[55%] shrink truncate text-xs text-muted-foreground" :title="treeNodeSecondaryValue(node)">{{ treeNodeSecondaryValue(node) }}</span>
             <button
               v-if="canDragPinnedOrder()"

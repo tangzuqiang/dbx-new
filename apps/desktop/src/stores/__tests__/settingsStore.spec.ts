@@ -94,15 +94,15 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({ sidebarIndent: 1.4, sidebarFontSize: 13.6 } as any).sidebarFontSize).toBe(14);
   });
 
-  it("uses inline comments by default and preserves legacy comment visibility", () => {
-    expect(normalizeEditorSettings({}).sidebarObjectInfoMode).toBe("comment-inline");
+  it("shows object sizes by default and preserves legacy comment visibility", () => {
+    expect(normalizeEditorSettings({}).sidebarObjectInfoMode).toBe("size");
     expect(normalizeEditorSettings({ sidebarObjectInfoMode: "comment-aligned" }).sidebarObjectInfoMode).toBe("comment-aligned");
     expect(normalizeEditorSettings({ sidebarObjectInfoMode: "comment-inline" }).sidebarObjectInfoMode).toBe("comment-inline");
     expect(normalizeEditorSettings({ sidebarObjectInfoMode: "comment-right" }).sidebarObjectInfoMode).toBe("comment-right");
     expect(normalizeEditorSettings({ sidebarObjectInfoMode: "size" }).sidebarObjectInfoMode).toBe("size");
     expect(normalizeEditorSettings({ sidebarTableCommentLayout: "aligned" } as any).sidebarObjectInfoMode).toBe("comment-aligned");
     expect(normalizeEditorSettings({ sidebarTableCommentLayout: "hidden" } as any).sidebarObjectInfoMode).toBe("hidden");
-    expect(normalizeEditorSettings({ sidebarHideTableComments: false } as any).sidebarObjectInfoMode).toBe("comment-inline");
+    expect(normalizeEditorSettings({ sidebarHideTableComments: false } as any).sidebarObjectInfoMode).toBe("size");
     expect(normalizeEditorSettings({ sidebarHideTableComments: true } as any).sidebarObjectInfoMode).toBe("hidden");
     expect(
       normalizeEditorSettings({
@@ -111,7 +111,7 @@ describe("normalizeEditorSettings", () => {
       } as any).sidebarObjectInfoMode,
     ).toBe("hidden");
     expect(normalizeEditorSettings({ sidebarShowDatabaseSizes: true } as any).sidebarObjectInfoMode).toBe("size");
-    expect(normalizeEditorSettings({ sidebarObjectInfoMode: "invalid" } as any).sidebarObjectInfoMode).toBe("comment-inline");
+    expect(normalizeEditorSettings({ sidebarObjectInfoMode: "invalid" } as any).sidebarObjectInfoMode).toBe("size");
   });
 
   it("hides connection notes by default and preserves an explicit opt-in", () => {

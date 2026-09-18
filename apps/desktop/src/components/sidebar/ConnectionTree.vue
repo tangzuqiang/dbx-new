@@ -884,7 +884,7 @@ let sidebarCommentMeasureFrame = 0;
 const sidebarTreeContentWidth = ref(0);
 let sidebarTreeContentMeasureFrame = 0;
 const sidebarTableNameDisplayTypes = new Set<TreeNodeType>(["table", "view", "materialized_view", "mongo-collection", "dynamodb-table", "vector-collection", "elasticsearch-index"]);
-const sidebarStorageDisplayTypes = new Set<TreeNodeType>(["database", "table", "materialized_view"]);
+const sidebarStorageDisplayTypes = new Set<TreeNodeType>(["database", "table", "materialized_view", "mongo-collection"]);
 
 function sidebarCommentLabel(node: TreeNode): string {
   const label = sidebarTableNameDisplayTypes.has(node.type) ? sidebarDisplayTableName(node.label, settingsStore.editorSettings.sidebarHiddenTablePrefixes) : node.label;

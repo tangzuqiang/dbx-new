@@ -1,9 +1,122 @@
+use serde::Serialize;
 use std::future::Future;
+use std::process::Stdio;
 use std::sync::Arc;
 use tauri::State;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 
 use crate::commands::connection::{ensure_connection_writable, AppState};
 use dbx_core::db::mongo_driver::MongoDocumentResult;
+
+const MONGOSH_EVAL: &str = r#"(async () => {
+  let source = require('fs').readFileSync(0, 'utf8');
+  db = connect(process.env.DBX_MONGO_URI);
+  const use = source.match(/^\s*use\s+([A-Za-z0-9_-]+)\s*(?:;|\r?\n|$)/i);
+  if (use) {
+    db = db.getSiblingDB(use[1]);
+    source = source.slice(use[0].length);
+  }
+  const show = source.trim().match(/^show\s+(dbs|databases|collections|users)\s*;?$/i);
+  if (show) {
+    const kind = show[1].toLowerCase();
+    source = kind === 'collections' ? 'db.getCollectionNames()' : kind === 'users' ? 'db.getUsers()' : 'db.adminCommand({listDatabases: 1}).databases';
+  }
+  let result = source.trim() ? await eval(source) : { database: db.getName() };
+  if (result && typeof result.toArray === 'function') result = await result.toArray();
+  print('__DBX_MONGOSH_RESULT__' + EJSON.stringify(result === undefined ? null : result, null, 0, { relaxed: true }));
+})().catch(error => { print('__DBX_MONGOSH_ERROR__' + (error?.message || String(error))); process.exitCode = 1; })"#;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoshStatus {
+    installed: bool,
+    version: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoshResult {
+    value: serde_json::Value,
+    output: String,
+}
+
+#[tauri::command]
+pub async fn mongo_shell_status() -> MongoshStatus {
+    let mut command = Command::new("mongosh");
+    command.arg("--version").kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            MongoshStatus { installed: true, version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()) }
+        }
+        _ => MongoshStatus { installed: false, version: None },
+    }
+}
+
+#[tauri::command]
+pub async fn mongo_execute_mongosh(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    source: String,
+    execution_id: Option<String>,
+) -> Result<MongoshResult, String> {
+    if dbx_core::query::connection_readonly_name(&state, &connection_id).await.is_some() {
+        return Err("mongosh execution is unavailable for read-only connections; use DBX's built-in MongoDB commands"
+            .to_string());
+    }
+    let config = state.configs.read().await.get(&connection_id).cloned().ok_or("Connection not found")?;
+    if config.db_type != dbx_core::models::connection::DatabaseType::MongoDb {
+        return Err("Not a MongoDB connection".to_string());
+    }
+    let mut config = dbx_core::connection::metadata_connection_config(&config);
+    state.apply_session_credential(&config.clone(), &mut config, &connection_id);
+    let (host, port) = state.connection_host_port(&connection_id, &config).await?;
+    if !database.trim().is_empty() {
+        config.database = Some(database);
+    }
+    let uri = config.connection_url_with_host(&host, port);
+    let timeout_secs = config.query_timeout_secs.clamp(1, 300);
+    run_cancellable(&state, execution_id, async move {
+        let mut command = Command::new("mongosh");
+        command
+            .args(["--nodb", "--quiet", "--norc", "--eval", MONGOSH_EVAL])
+            .env("DBX_MONGO_URI", &uri)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let mut child = command.spawn().map_err(|error| format!("Unable to start mongosh from PATH: {error}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(source.as_bytes())
+                .await
+                .map_err(|error| format!("Unable to send script to mongosh: {error}"))?;
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait_with_output())
+            .await
+            .map_err(|_| "mongosh query timed out".to_string())?
+            .map_err(|error| format!("mongosh execution failed: {error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let shell_error = stdout.lines().find_map(|line| line.strip_prefix("__DBX_MONGOSH_ERROR__"));
+        if !output.status.success() || shell_error.is_some() {
+            let message = shell_error.unwrap_or(stderr.trim());
+            return Err(message.replace(&uri, "[redacted MongoDB URI]"));
+        }
+        let marker = "__DBX_MONGOSH_RESULT__";
+        let marker_at =
+            stdout.rfind(marker).ok_or_else(|| format!("mongosh returned no structured result: {}", stderr.trim()))?;
+        let value = serde_json::from_str(stdout[marker_at + marker.len()..].trim())
+            .map_err(|error| format!("Unable to parse mongosh result: {error}"))?;
+        Ok(MongoshResult { value, output: stdout[..marker_at].trim().to_string() })
+    })
+    .await
+}
 
 #[tauri::command]
 pub fn mongo_parse_shell_command(source: String) -> Result<dbx_core::mongo_shell::MongoCommand, String> {

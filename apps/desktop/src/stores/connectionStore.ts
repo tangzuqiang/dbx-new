@@ -436,6 +436,7 @@ export const useConnectionStore = defineStore("connection", () => {
     maxEntries: SIDEBAR_TABLE_STORAGE_CACHE_MAX_ENTRIES,
   });
   const sidebarTableStorageInFlight = new Map<string, Promise<ObjectStatistics[]>>();
+  const databaseTableCountInFlight = new Map<string, Promise<void>>();
   const pinnedTreeNodeOrder = ref<string[]>([]);
   const pinnedTreeNodeIds = ref<Set<string>>(new Set());
   const activePinnedTreeNodeReorderKey = ref<string | null>(null);
@@ -1521,15 +1522,17 @@ export const useConnectionStore = defineStore("connection", () => {
           const isLoading = old.isLoading;
           const oldChildren = old.children;
           const objectCount = child.objectCount ?? old.objectCount;
+          const tableCount = child.tableCount ?? old.tableCount;
           Object.assign(old, child);
           old.isExpanded = isExpanded;
           old.isLoading = isLoading;
           old.children = oldChildren;
           old.objectCount = objectCount;
+          old.tableCount = tableCount;
           return old;
         }
         if (old?.isExpanded) {
-          return { ...child, isExpanded: true, children: old.children, objectCount: child.objectCount ?? old.objectCount };
+          return { ...child, isExpanded: true, children: old.children, objectCount: child.objectCount ?? old.objectCount, tableCount: child.tableCount ?? old.tableCount };
         }
         if (old && objectTypesForGroupNode(old.type)) {
           return { ...child, objectCount: child.objectCount ?? old.objectCount };
@@ -1541,7 +1544,7 @@ export const useConnectionStore = defineStore("connection", () => {
         if (old && (old.type === "database" || old.type === "schema" || old.type === "linked-server-schema")) {
           forgetTreeNodeLoadState(child.id);
         }
-        return child;
+        return old?.tableCount == null ? child : { ...child, tableCount: child.tableCount ?? old.tableCount };
       });
     }
     const migratedPins = migrateLegacyPinnedTreeNodeOrder(children, pinnedTreeNodeOrder.value);
@@ -4121,7 +4124,9 @@ export const useConnectionStore = defineStore("connection", () => {
 
     let request = options?.force ? undefined : sidebarTableStorageInFlight.get(requestKey);
     if (!request) {
-      request = api.listObjectStatistics(scope.connectionId, scope.database, scope.schema);
+      request = getConfig(scope.connectionId)?.db_type === "mongodb"
+        ? loadMongoSidebarCollectionStorage(scope)
+        : api.listObjectStatistics(scope.connectionId, scope.database, scope.schema);
       sidebarTableStorageInFlight.set(requestKey, request);
     }
     try {
@@ -4136,6 +4141,39 @@ export const useConnectionStore = defineStore("connection", () => {
         sidebarTableStorageInFlight.delete(requestKey);
       }
     }
+  }
+
+  async function loadMongoSidebarCollectionStorage(scope: SidebarTableStorageScope): Promise<ObjectStatistics[]> {
+    const names = new Set<string>();
+    const collect = (nodes: readonly TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.type === "mongo-collection" && node.connectionId === scope.connectionId && node.database === scope.database && mongoCollectionKindFromNode(node) !== "view") names.add(node.label);
+        if (node.children?.length) collect(node.children);
+        if (node.hiddenChildren?.length) collect(node.hiddenChildren);
+      }
+    };
+    collect(treeNodes.value);
+    const collections = [...names];
+    const results: ObjectStatistics[] = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, collections.length) }, async () => {
+      while (next < collections.length) {
+        const name = collections[next++];
+        try {
+          const stats = await api.mongoCollectionStats(scope.connectionId, scope.database, name);
+          const storage = stats.storageSize == null ? NaN : Number(stats.storageSize);
+          const indexes = stats.totalIndexSize == null ? NaN : Number(stats.totalIndexSize);
+          if (Number.isFinite(storage) && storage >= 0) {
+            const item = { name, total_bytes: storage + (Number.isFinite(indexes) && indexes >= 0 ? indexes : 0) };
+            results.push(item);
+            if (connectedIds.value.has(scope.connectionId)) applySidebarTableStorage(treeNodes.value, scope, [item]);
+          }
+        } catch (error) {
+          console.debug("[DBX][sidebar-mongo-storage:unavailable]", { database: scope.database, collection: name, error });
+        }
+      }
+    }));
+    return results;
   }
 
   const sidebarDatabaseStorageScope = computed(() => {
@@ -5055,6 +5093,7 @@ export const useConnectionStore = defineStore("connection", () => {
       ];
       const targetNode = treeNodeLoadTarget(load);
       if (!targetNode) return;
+      targetNode.tableCount = collectionEntries.filter((collection) => toMongoCollectionKind(collection.kind) !== "view").length;
       setChildren(targetNode, children);
       targetNode.isExpanded = true;
     } catch (e) {
@@ -5064,6 +5103,80 @@ export const useConnectionStore = defineStore("connection", () => {
       finishTreeNodeLoad(load);
     }
   }
+
+  function refreshDatabaseTableCount(node: TreeNode, force = false): Promise<void> {
+    if ((node.type !== "database" && node.type !== "mongo-db") || !node.connectionId || !node.database) return Promise.resolve();
+    if (!force && node.tableCount != null) return Promise.resolve();
+    const { id, connectionId, database, catalog } = node;
+    const pending = databaseTableCountInFlight.get(id);
+    if (pending) return pending;
+    node.tableCountLoading = true;
+    const request = (async () => {
+      try {
+        let count = 0;
+        if (node.type === "mongo-db") {
+          const collections = visibleMongoCollections(await api.mongoListCollections(connectionId, database));
+          count = collections.filter((collection) => toMongoCollectionKind(collection.kind) !== "view").length;
+        } else {
+          const config = getConfig(connectionId);
+          const dbType = effectiveDatabaseTypeForConnection(config);
+          if (config?.db_type === "mysql") {
+            try {
+              count = (await api.listObjectStatistics(connectionId, database, "")).length;
+              if (!connectedIds.value.has(connectionId)) return;
+              const current = findNode(treeNodes.value, id);
+              if (current?.type === node.type) current.tableCount = count;
+              return;
+            } catch {
+              // Restricted information_schema accounts can still use listTables.
+            }
+          }
+          const hasSchemas = config?.db_type === "sqlserver" || ((usesTreeSchemaMode(dbType) && !connectionUsesDatabaseObjectTreeMode(config)) || connectionShouldDiscoverJdbcSchemas(config));
+          const schemas = hasSchemas
+            ? filterSchemaNamesForConnection(await api.listSchemas(connectionId, database), config, database, { showSystemSchemas: config?.show_system_schemas === true })
+            : [""];
+          // Sidebar children are paginated, so count from the full metadata list.
+          for (const schema of schemas.length ? schemas : [""]) {
+            const tables = await api.listTables(connectionId, database, schema, undefined, undefined, undefined, ["TABLE"], catalog);
+            count += tables.filter((table) => !["VIEW", "MATERIALIZED_VIEW"].includes(table.table_type.toUpperCase())).length;
+          }
+        }
+        if (!connectedIds.value.has(connectionId)) return;
+        const current = findNode(treeNodes.value, id);
+        if (current?.type === node.type) current.tableCount = count;
+      } catch (error) {
+        console.debug("[DBX][database-table-count:unavailable]", { connectionId, database, error });
+      } finally {
+        const current = findNode(treeNodes.value, id);
+        if (current?.type === node.type) current.tableCountLoading = false;
+      }
+    })();
+    databaseTableCountInFlight.set(id, request);
+    void request.finally(() => {
+      if (databaseTableCountInFlight.get(id) === request) databaseTableCountInFlight.delete(id);
+    });
+    return request;
+  }
+
+  function scheduleDatabaseTableCounts(nodes: readonly TreeNode[]): void {
+    const databases = nodes.filter((node) => node.type === "database" || node.type === "mongo-db");
+    let next = 0;
+    void Promise.all(Array.from({ length: Math.min(2, databases.length) }, async () => {
+      while (next < databases.length) await refreshDatabaseTableCount(databases[next++]);
+    }));
+  }
+
+  watch(
+    () => [...connectedIds.value].flatMap((connectionId) =>
+      (findConnectionNode(connectionId)?.children || [])
+        .filter((node) => node.type === "database" || node.type === "mongo-db")
+        .map((node) => node.id),
+    ),
+    () => {
+      for (const connectionId of connectedIds.value) scheduleDatabaseTableCounts(findConnectionNode(connectionId)?.children || []);
+    },
+    { immediate: true },
+  );
 
   async function loadSchemas(connectionId: string, database: string, options?: LoadTreeOptions) {
     const configForScope = getConfig(connectionId);
@@ -6648,6 +6761,7 @@ export const useConnectionStore = defineStore("connection", () => {
           await loadTables(node.connectionId, node.database, undefined, options);
         }
       }
+      refreshDatabaseTableCount(node, options?.force);
     } else if (node.type === "schema" && node.connectionId && hasTreeNodeDatabaseContext(node) && schemaNodeHasLoadableName(effectiveDatabaseTypeForConnection(getConfig(node.connectionId)), node.schema)) {
       await loadTables(node.connectionId, node.database, node.schema, options);
     } else if (node.type === "linked-server-root" && node.connectionId) {

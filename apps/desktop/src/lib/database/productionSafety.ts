@@ -127,13 +127,19 @@ export function assessProductionSql(sql: string, connection: ConnectionConfig | 
   const targetText = sqlTargetSafetyText(sql);
   const statements = splitTargetStatements(targetText.text);
   const risk = classifySqlRisk(sql, { dialect: connection?.db_type });
-  const isMutation = isSqlRiskMutation(risk.risk);
+  // mongosh executes arbitrary JavaScript, so static SQL risk classification cannot
+  // prove a MongoDB script read-only. Confirm every script on marked production data.
+  const isMutation = connection?.db_type === "mongodb" && !!sql.trim() ? true : isSqlRiskMutation(risk.risk);
   if (!isMutation || !connection) return { ...activeContext, isMutation };
   if (connection.is_production) return { active: true, reason: "connection", databases: [], isMutation };
   if (activeContext.active) return { ...activeContext, isMutation };
 
   const marked = productionDatabases(connection);
   if (!marked.length) return { active: false, databases: [], isMutation };
+
+  if (connection.db_type === "mongodb") {
+    return { active: true, reason: "sql_target", databases: marked, isMutation };
+  }
 
   const targets = referencedDatabases(statements, connection.db_type, activeDatabase, targetText.quotedIdentifiers);
   const matched = targets.databases.filter((database) => marked.includes(normalizeProductionDatabase(database)));

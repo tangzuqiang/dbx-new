@@ -31,6 +31,7 @@ import {
   type MongoAggregateSafetyOptions,
 } from "@/lib/mongo/mongoShellCommand";
 import { refreshLoadedMongoIndexes } from "@/lib/mongo/mongoIndexMetadata";
+import { getMongoshStatus } from "@/lib/mongo/mongoshAvailability";
 import { redisCommandResultToQueryResult } from "@/lib/redis/redisQueryResult";
 import { nextRedisCommandDb } from "@/lib/redis/redisCommandSession";
 import { isRedisMutatingCommand } from "@/lib/redis/redisCommandTable";
@@ -4879,6 +4880,42 @@ export const useQueryStore = defineStore("query", () => {
         // refresh. Fire-and-forget: never block result display.
         if (hadMutatingCommand) {
           void connStore.refreshRedisDbKeyCounts(executionConnectionId);
+        }
+        return producedResult;
+      }
+
+      if (conn?.db_type === "mongodb" && !conn.read_only && !options?.mongoSafety && sql.trim() && (await getMongoshStatus()).installed) {
+        const shellStartedAt = performance.now();
+        const shellResult = await api.mongoExecuteMongosh(executionConnectionId, executionDatabase, sql, executionId);
+        const documents = Array.isArray(shellResult.value) ? shellResult.value : [shellResult.value];
+        const maxRows = effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows);
+        const result = markQueryResultRowsRaw(annotateQueryResultSource(
+          mongoDocumentsToQueryResult(documents.slice(0, maxRows), performance.now() - shellStartedAt, documents.length),
+          sql,
+          undefined,
+          undefined,
+          options?.sourceOffset === undefined ? undefined : { from: options.sourceOffset, to: options.sourceOffset + sql.length },
+        ));
+        if (shellResult.output) result.messages = [{ severity: "INFO", message: shellResult.output }];
+        const current = findExecutionTab(id);
+        if (current?.executionId === executionId) {
+          current.results = undefined;
+          current.activeResultIndex = undefined;
+          current.result = result;
+          producedResult = true;
+          touchResult(current);
+          current.queryAnalysis = undefined;
+          current.querySourceColumns = undefined;
+          current.resultColumnComments = undefined;
+          current.queryDisplaySourceColumns = undefined;
+          current.queryEditabilityReason = undefined;
+          current.mongoEditTarget = undefined;
+          current.tableMeta = undefined;
+          current.resultBaseSql = sql;
+          current.resultSortedSql = undefined;
+          syncDisplayedResultRun(current, sql, captureResultRun);
+          const databaseSwitch = sql.match(/^\s*use\s+([A-Za-z0-9_-]+)\s*(?:;|\r?\n|$)/i);
+          if (!usesExternalExecutionTarget && databaseSwitch) current.database = databaseSwitch[1];
         }
         return producedResult;
       }

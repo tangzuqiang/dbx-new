@@ -1035,6 +1035,9 @@ export interface TreeNode {
   xuguTablespace?: XuguTablespaceInfo;
   xuguDatafilePath?: string;
   objectCount?: number;
+  /** Total number of tables (or MongoDB collections) in this database. */
+  tableCount?: number;
+  tableCountLoading?: boolean;
   loadedKeyCount?: number;
   totalKeyCount?: number;
   partitionParentSchema?: string;

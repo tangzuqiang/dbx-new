@@ -999,7 +999,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   sidebarHiddenTablePrefixes: [],
   sidebarCopyTableNameSeparator: "comma",
   sidebarCopyTableNameIncludeSchema: false,
-  sidebarObjectInfoMode: "comment-inline",
+  sidebarObjectInfoMode: "size",
   sidebarShowConnectionNotes: false,
   sidebarShowTooltips: true,
   sidebarAllowHorizontalScroll: false,

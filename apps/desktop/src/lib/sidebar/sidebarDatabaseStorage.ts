@@ -1,6 +1,6 @@
 import type { ConnectionConfig, DatabaseStorageInfo, ObjectStatistics, TreeNode } from "@/types/database";
 
-const sidebarTableStorageTypes = new Set<ConnectionConfig["db_type"]>(["mysql", "postgres", "sqlserver", "oracle", "clickhouse", "dameng", "gaussdb", "kingbase", "gbase"]);
+const sidebarTableStorageTypes = new Set<ConnectionConfig["db_type"]>(["mysql", "postgres", "sqlserver", "oracle", "clickhouse", "dameng", "gaussdb", "kingbase", "gbase", "mongodb"]);
 
 export function supportsSidebarDatabaseStorage(connection: ConnectionConfig | undefined): boolean {
   return connection?.db_type === "postgres" && connection.driver_profile !== "cockroachdb";
@@ -40,7 +40,7 @@ export interface SidebarTableStorageScope {
 export function sidebarTableStorageScopes(nodes: readonly TreeNode[]): SidebarTableStorageScope[] {
   const scopes = new Map<string, SidebarTableStorageScope>();
   for (const node of nodes) {
-    if ((node.type !== "table" && node.type !== "materialized_view") || !node.connectionId || !node.database) continue;
+    if ((node.type !== "table" && node.type !== "materialized_view" && node.type !== "mongo-collection") || !node.connectionId || !node.database) continue;
     const scope = { connectionId: node.connectionId, database: node.database, schema: node.schema || "" };
     scopes.set(`${scope.connectionId}\0${scope.database}\0${scope.schema}`, scope);
   }
@@ -53,7 +53,7 @@ export function applySidebarTableStorage(nodes: readonly TreeNode[] | undefined,
   let changed = false;
   const visit = (items: readonly TreeNode[]) => {
     for (const node of items) {
-      if ((node.type === "table" || node.type === "materialized_view") && node.connectionId === scope.connectionId && node.database === scope.database && (node.schema || "") === scope.schema && sizeByName.has(node.label)) {
+      if ((node.type === "table" || node.type === "materialized_view" || node.type === "mongo-collection") && node.connectionId === scope.connectionId && node.database === scope.database && (node.schema || "") === scope.schema && sizeByName.has(node.label)) {
         const sizeBytes = sizeByName.get(node.label) ?? null;
         if (node.sizeBytes !== sizeBytes) {
           node.sizeBytes = sizeBytes;

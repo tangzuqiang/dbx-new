@@ -23,6 +23,7 @@ import { hexToRgba } from "@/lib/common/color";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import { looksLikeDmlStatement } from "@/lib/sql/dmlChangePreview";
+import { getMongoshStatus } from "@/lib/mongo/mongoshAvailability";
 import type { QueryTab, ConnectionConfig } from "@/types/database";
 
 const props = defineProps<{
@@ -77,6 +78,15 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const connectionStore = useConnectionStore();
 const settingsStore = useSettingsStore();
+const mongoshInstalled = ref(false);
+const mongoshVersion = ref<string | null>(null);
+watch(() => props.activeConnection?.db_type, (type) => {
+  if (type !== "mongodb") return;
+  void getMongoshStatus().then((status) => {
+    mongoshInstalled.value = status.installed;
+    mongoshVersion.value = status.version;
+  });
+}, { immediate: true });
 const { databaseOptions, loadingDatabaseOptions, loadDatabaseOptions, catalogOptions, loadingCatalogOptions, loadCatalogOptions, catalogDatabaseOptions, loadingCatalogDatabaseOptions, loadCatalogDatabaseOptions } = useDatabaseOptions();
 const { loadSchemaOptions, getSchemaOptionsForDb, isLoadingSchemas, isSchemaAware } = useSchemaOptions();
 
@@ -523,6 +533,9 @@ async function changeCatalog(selectedCatalog: string) {
       </div>
     </div>
     <span class="flex-1 min-w-0" />
+    <span v-if="activeConnection?.db_type === 'mongodb' && mongoshInstalled" class="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300" :title="t('toolbar.mongoshInstalledHint', { version: mongoshVersion || '' })">
+      {{ t("toolbar.mongoshInstalled") }}
+    </span>
     <div class="flex items-center gap-2 shrink-0">
       <div class="flex items-center gap-1">
         <span v-if="activeConnection?.color" class="h-4 w-1 rounded-full shrink-0" :style="{ backgroundColor: activeConnection.color }" />
