@@ -1,0 +1,7 @@
+{
+  "version": "0.6.0",
+  "notes": "初始版本",
+  "url": "http://111.230.247.111/dbx/DBX_0.6.0_x64-setup.exe",
+  "sha256": "",
+  "silentArgs": "/S /UPDATE /R"
+}

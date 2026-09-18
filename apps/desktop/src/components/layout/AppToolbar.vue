@@ -25,6 +25,7 @@ const GithubIcon = {
 };
 
 const props = defineProps<{
+  appVersion: string;
   isDark: boolean;
   themeMode: AppThemeMode;
   showAiPanel: boolean;
@@ -534,6 +535,9 @@ const toolbarStyle = computed(() => {
 
 <template>
   <div ref="toolbarEl" class="app-toolbar h-10 flex items-center gap-1 px-2 border-b bg-muted/30 shrink-0 overflow-hidden" :style="toolbarStyle" data-tauri-drag-region @dblclick="onToolbarDblClick">
+    <span class="shrink-0 select-none px-1.5 text-xs font-semibold tracking-wide text-foreground/80" data-tauri-drag-region>
+      {{ appVersion ? `dbx-${appVersion}` : "dbx" }}
+    </span>
     <Button variant="ghost" size="sm" :class="toolbarTextButtonClass" @click="emit('new-connection')">
       <span class="inline-flex items-center gap-1">
         <DatabaseZap class="h-3.5 w-3.5" />

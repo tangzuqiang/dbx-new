@@ -268,7 +268,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseDraft: true
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.legacy-updater.conf.json
 
       - name: Verify AppImage input methods
         if: startsWith(matrix.platform, 'ubuntu')
@@ -412,7 +412,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseDraft: true
-          args: --target ${{ matrix.target }} --config src-tauri/tauri.vsign.conf.json
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.vsign.conf.json --config src-tauri/tauri.legacy-updater.conf.json
 
       - name: Verify Windows bundles
         shell: pwsh

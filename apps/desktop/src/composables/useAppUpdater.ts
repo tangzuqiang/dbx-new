@@ -90,11 +90,7 @@ export function tagVersion(version: string): string {
 }
 
 export function resolveUpdateReleaseUrl(info: api.UpdateInfo | null, source: unknown, fallbackUrl: string): string {
-  const normalizedSource = normalizeUpdateDownloadSource(source);
-  if (normalizedSource === "cnb" && info?.latest_version) {
-    return `https://cnb.cool/dbxio.com/dbx/-/releases/tag/${tagVersion(info.latest_version)}`;
-  }
-  if (normalizedSource === "cnb") return "https://cnb.cool/dbxio.com/dbx/-/releases";
+  void source;
   return info?.release_url || fallbackUrl;
 }
 
@@ -127,7 +123,7 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
   const isIgnoringUpdate = ref(false);
   const activeTaskCount = computed(() => Math.max(0, Math.trunc(options.getActiveTaskCount?.() ?? 0)));
   const hasUpdateAvailable = computed(() => updateInfo.value?.update_available === true && !isUpdateIgnored(updateInfo.value, settingsStore.editorSettings.ignoredUpdateVersion));
-  const latestReleaseUrl = "https://github.com/t8y2/dbx/releases/latest";
+  const latestReleaseUrl = "http://111.230.247.111/dbx/";
   let activeDownloadAttempt = 0;
   let pendingCancellation: Promise<void> | undefined;
 
@@ -149,8 +145,7 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
     }
     checkingUpdates.value = true;
     // Keep the previous message/failed state visible while the check is in
-    // flight: pre-clearing would flip the dialog to "up to date" with an empty
-    // version and unmount the source switcher until the request settles.
+    // flight: pre-clearing would briefly show "up to date" with no version.
     try {
       const info = await api.checkForUpdates(currentLocale(), normalizeUpdateDownloadSource(settingsStore.editorSettings.updateDownloadSource));
       updateInfo.value = info;
@@ -197,11 +192,6 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
   function openLatestRelease() {
     const url = resolveUpdateReleaseUrl(updateInfo.value, settingsStore.editorSettings.updateDownloadSource, latestReleaseUrl);
     openUrl(url);
-  }
-
-  async function changeUpdateDownloadSource(source: SettingsUpdateDownloadSource) {
-    await settingsStore.updateEditorSettingsAndPersist({ updateDownloadSource: source });
-    await checkUpdates();
   }
 
   async function ignoreCurrentVersion() {
@@ -291,11 +281,10 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
   async function installPendingUpdate() {
     isInstallingUpdate.value = true;
     try {
-      const portableMode = updateInfo.value?.portable_mode === true;
       await api.installDownloadedUpdate();
       updateDownloaded.value = false;
-      // The portable helper exits and relaunches DBX after the invoke response is delivered.
-      updateReady.value = !portableMode;
+      // The Windows installer helper exits DBX, installs, and relaunches it.
+      updateReady.value = false;
     } finally {
       isInstallingUpdate.value = false;
     }
@@ -374,7 +363,6 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
     checkUpdates,
     formatUpdateError,
     openLatestRelease,
-    changeUpdateDownloadSource,
     ignoreCurrentVersion,
     downloadUpdateInBackground,
     cancelDownload,

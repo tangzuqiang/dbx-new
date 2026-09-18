@@ -4,9 +4,7 @@ import { useI18n } from "vue-i18n";
 import { AlertTriangle, Loader2 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { UpdateInfo } from "@/lib/backend/api";
-import type { UpdateDownloadSource } from "@/lib/backend/tauri";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { canDownloadAndInstallUpdate } from "@/composables/useAppUpdater";
 
@@ -23,8 +21,6 @@ const props = defineProps<{
   isIgnoringUpdate: boolean;
   activeTaskCount: number;
   checkingUpdates: boolean;
-  updateCheckFailed: boolean;
-  updateDownloadSource: UpdateDownloadSource;
 }>();
 
 const emit = defineEmits<{
@@ -34,7 +30,6 @@ const emit = defineEmits<{
   "install-downloaded": [];
   restart: [];
   "ignore-version": [];
-  "change-download-source": [source: UpdateDownloadSource];
 }>();
 
 const { t } = useI18n();
@@ -143,18 +138,6 @@ watch(
         </div>
       </div>
       <DialogFooter class="relative min-w-0 sm:justify-end">
-        <div v-if="updateCheckFailed && !isDownloadingUpdate && !updateReady" class="flex items-center gap-1.5 self-start sm:absolute sm:left-4 sm:top-1/2 sm:-translate-y-1/2">
-          <span class="text-xs text-muted-foreground">{{ t("updates.source") }}</span>
-          <Select :model-value="updateDownloadSource" :disabled="checkingUpdates" @update:model-value="(value) => value && emit('change-download-source', value as UpdateDownloadSource)">
-            <SelectTrigger class="h-8 w-[150px] text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="official">{{ t("updates.sourceOfficial") }}</SelectItem>
-              <SelectItem value="cnb">{{ t("updates.sourceCnb") }}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
         <template v-if="updateInfo?.update_available">
           <div class="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
             <Button v-if="!isCloseBlocked" variant="outline" class="shrink-0" @click="handleCancel">{{ t("dangerDialog.cancel") }}</Button>

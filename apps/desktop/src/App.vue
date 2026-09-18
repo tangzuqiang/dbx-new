@@ -196,7 +196,6 @@ const {
   checkingUpdates,
   updateInfo,
   updateCheckMessage,
-  updateCheckFailed,
   showUpdateDialog,
   isDownloadingUpdate,
   downloadProgress,
@@ -209,7 +208,6 @@ const {
   openUrl,
   checkUpdates,
   openLatestRelease,
-  changeUpdateDownloadSource,
   ignoreCurrentVersion,
   downloadUpdateInBackground,
   cancelDownload,
@@ -3079,6 +3077,7 @@ onUnmounted(() => {
     <TooltipProvider :delay-duration="300">
       <div class="h-screen w-screen max-w-full min-w-[760px] min-h-[600px] flex flex-col bg-background text-foreground overflow-hidden" :class="{ 'dbx-desktop-window-frame': drawDesktopWindowFrame }" :style="appUiFontFamilyStyle">
         <AppToolbar
+          :app-version="appVersion"
           :is-dark="isDark"
           :theme-mode="themeMode"
           :show-ai-panel="showAiPanel"
@@ -3432,8 +3431,6 @@ onUnmounted(() => {
           :update-info="updateInfo"
           :update-check-message="updateCheckMessage"
           :checking-updates="checkingUpdates"
-          :update-check-failed="updateCheckFailed"
-          :update-download-source="settingsStore.editorSettings.updateDownloadSource"
           :is-downloading-update="isDownloadingUpdate"
           :download-progress="downloadProgress"
           :update-downloaded="updateDownloaded"
@@ -3442,7 +3439,6 @@ onUnmounted(() => {
           :is-ignoring-update="isIgnoringUpdate"
           :active-task-count="activeUpdateTaskCount"
           @open-latest-release="openLatestRelease"
-          @change-download-source="changeUpdateDownloadSource"
           @download-in-background="downloadUpdateInBackground"
           @cancel-download="cancelDownload"
           @install-downloaded="installDownloadedUpdate"

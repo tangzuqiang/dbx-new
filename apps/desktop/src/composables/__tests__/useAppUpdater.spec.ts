@@ -125,14 +125,12 @@ describe("useAppUpdater download attempts", () => {
     secondDownload.resolve();
     await retryAttempt;
 
-    // No active tasks by default, so the successful download auto-installs and lands on
-    // "ready to restart" instead of waiting for a manual "Install Now" click.
+    // No active tasks by default, so the installer helper takes over immediately.
     expect(apiMock.installDownloadedUpdate).toHaveBeenCalledOnce();
     expect(updater.isDownloadingUpdate.value).toBe(false);
     expect(updater.downloadProgress.value).toBe(100);
     expect(updater.updateDownloaded.value).toBe(false);
-    expect(updater.updateReady.value).toBe(true);
-    expect(toastMock).toHaveBeenLastCalledWith("DBX has been updated. Restart to finish.", 10000, expect.objectContaining({ label: "Exit & Restart", onClick: expect.any(Function) }));
+    expect(updater.updateReady.value).toBe(false);
   });
 
   it("auto-installs once the download finishes while idle, without waiting for a manual click", async () => {
@@ -146,8 +144,7 @@ describe("useAppUpdater download attempts", () => {
 
     expect(apiMock.installDownloadedUpdate).toHaveBeenCalledOnce();
     expect(updater.updateDownloaded.value).toBe(false);
-    expect(updater.updateReady.value).toBe(true);
-    expect(toastMock).toHaveBeenLastCalledWith("DBX has been updated. Restart to finish.", 10000, expect.objectContaining({ label: "Exit & Restart", onClick: expect.any(Function) }));
+    expect(updater.updateReady.value).toBe(false);
   });
 
   it("falls back to a manual Install Now toast when tasks are still active once the download finishes", async () => {
@@ -168,8 +165,8 @@ describe("useAppUpdater download attempts", () => {
     action.onClick();
 
     await vi.waitFor(() => expect(apiMock.installDownloadedUpdate).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(toastMock).toHaveBeenLastCalledWith("DBX has been updated. Restart to finish.", 10000, expect.objectContaining({ label: "Exit & Restart", onClick: expect.any(Function) })));
-    expect(updater.updateReady.value).toBe(true);
+    await vi.waitFor(() => expect(updater.updateDownloaded.value).toBe(false));
+    expect(updater.updateReady.value).toBe(false);
   });
 
   it("tracks download progress and stays indeterminate when the backend reports no total", async () => {
@@ -229,16 +226,16 @@ describe("useAppUpdater reopening the dialog from the toolbar", () => {
     expect(updater.showUpdateDialog.value).toBe(true);
   });
 
-  it("resurfaces the dialog without re-checking once the update is installed and awaiting restart", async () => {
+  it("checks again after handing off to the installer helper", async () => {
     apiMock.downloadUpdate.mockResolvedValueOnce();
     const updater = mountUpdater();
 
     await updater.downloadUpdateInBackground();
-    expect(updater.updateReady.value).toBe(true);
+    expect(updater.updateReady.value).toBe(false);
 
     await updater.checkUpdates();
 
-    expect(apiMock.checkForUpdates).not.toHaveBeenCalled();
+    expect(apiMock.checkForUpdates).toHaveBeenCalledOnce();
     expect(updater.showUpdateDialog.value).toBe(true);
   });
 
@@ -290,8 +287,7 @@ describe("useAppUpdater failure state handling", () => {
     const pending = updater.checkUpdates();
     await vi.waitFor(() => expect(updater.checkingUpdates.value).toBe(true));
 
-    // Mid-retry: the source switcher stays mounted (updateCheckFailed) and
-    // the dialog must not fall through to "up to date" with an empty version.
+    // Mid-retry: the dialog must not fall through to "up to date" with an empty version.
     expect(updater.updateCheckFailed.value).toBe(true);
     expect(updater.updateCheckMessage.value).not.toBe("");
 

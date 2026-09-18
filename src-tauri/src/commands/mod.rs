@@ -55,8 +55,8 @@ pub mod table_import;
 pub mod text_export;
 pub mod transfer;
 pub mod tunnel_profiles;
+#[path = "update_installer.rs"]
 pub mod update;
-mod update_portable;
 pub mod vector_cmd;
 pub mod window_controls;
 pub mod xlsx_export;

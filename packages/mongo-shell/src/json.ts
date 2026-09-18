@@ -37,7 +37,7 @@ export function parseMongoObjectArgument(arg: string | undefined): string | null
 
 export function parseCollectionMethodTarget(source: string, method: string): { collection: string; methodCallIndex: number } | null {
   const escapedMethod = escapeRegExp(method);
-  const direct = new RegExp(`^db\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\.\\s*${escapedMethod}\\s*\\(`).exec(source);
+  const direct = new RegExp(`^db\\s*\\.\\s*([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)\\s*\\.\\s*${escapedMethod}\\s*\\(`).exec(source);
   if (direct) {
     return { collection: direct[1]!, methodCallIndex: findChainedMethodCallIndex(source, method) };
   }

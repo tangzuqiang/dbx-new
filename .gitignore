@@ -116,6 +116,8 @@ review_classified.json
 
 # Logs
 *.log
+/release/
+/scripts/.update-server.env
 
 # Native build/debug artifacts outside Cargo target directories
 *.pdb
