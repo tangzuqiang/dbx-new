@@ -201,6 +201,7 @@ const {
   downloadProgress,
   updateDownloaded,
   isInstallingUpdate,
+  installFailed,
   updateReady,
   isIgnoringUpdate,
   activeTaskCount: activeUpdateTaskCount,
@@ -210,7 +211,6 @@ const {
   openLatestRelease,
   ignoreCurrentVersion,
   downloadUpdateInBackground,
-  cancelDownload,
   installDownloadedUpdate,
   restartApp,
 } = useAppUpdater({
@@ -3432,15 +3432,14 @@ onUnmounted(() => {
           :update-check-message="updateCheckMessage"
           :checking-updates="checkingUpdates"
           :is-downloading-update="isDownloadingUpdate"
-          :download-progress="downloadProgress"
           :update-downloaded="updateDownloaded"
           :is-installing-update="isInstallingUpdate"
+          :install-failed="installFailed"
           :update-ready="updateReady"
           :is-ignoring-update="isIgnoringUpdate"
           :active-task-count="activeUpdateTaskCount"
           @open-latest-release="openLatestRelease"
           @download-in-background="downloadUpdateInBackground"
-          @cancel-download="cancelDownload"
           @install-downloaded="installDownloadedUpdate"
           @restart="restartApp"
           @ignore-version="ignoreCurrentVersion"

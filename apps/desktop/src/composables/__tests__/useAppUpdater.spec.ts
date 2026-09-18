@@ -147,26 +147,49 @@ describe("useAppUpdater download attempts", () => {
     expect(updater.updateReady.value).toBe(false);
   });
 
-  it("falls back to a manual Install Now toast when tasks are still active once the download finishes", async () => {
-    apiMock.downloadUpdate.mockResolvedValueOnce();
+  it("automatically installs once tasks that started during download finish", async () => {
+    const download = deferred<void>();
+    apiMock.downloadUpdate.mockReturnValueOnce(download.promise);
     // Must be a reactive ref, not a plain closure variable — useAppUpdater's activeTaskCount
     // is a computed(), which only invalidates its cache when a tracked reactive source changes.
-    const activeTaskCount = ref(2);
+    const activeTaskCount = ref(0);
     const updater = mountUpdater({ getActiveTaskCount: () => activeTaskCount.value });
-
-    await updater.downloadUpdateInBackground();
+    const attempt = updater.downloadUpdateInBackground();
+    await vi.waitFor(() => expect(apiMock.downloadUpdate).toHaveBeenCalledOnce());
+    activeTaskCount.value = 2;
+    download.resolve();
+    await attempt;
 
     expect(apiMock.installDownloadedUpdate).not.toHaveBeenCalled();
     expect(updater.updateDownloaded.value).toBe(true);
-    expect(toastMock).toHaveBeenLastCalledWith("DBX v0.5.70 is ready to install.", 10000, expect.objectContaining({ label: "Install Now", onClick: expect.any(Function) }));
-
     activeTaskCount.value = 0;
-    const [, , action] = toastMock.mock.lastCall!;
-    action.onClick();
-
     await vi.waitFor(() => expect(apiMock.installDownloadedUpdate).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(updater.updateDownloaded.value).toBe(false));
     expect(updater.updateReady.value).toBe(false);
+  });
+
+  it("does not start a one-click update while tasks are active", async () => {
+    const updater = mountUpdater({ getActiveTaskCount: () => 2 });
+    await updater.downloadUpdateInBackground();
+    expect(apiMock.downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.showUpdateDialog.value).toBe(false);
+  });
+
+  it("retains the downloaded installer and offers retry if launching installation fails", async () => {
+    apiMock.downloadUpdate.mockResolvedValueOnce();
+    apiMock.installDownloadedUpdate.mockRejectedValueOnce(new Error("helper failed")).mockResolvedValueOnce();
+    const updater = mountUpdater();
+
+    await updater.downloadUpdateInBackground();
+    expect(updater.updateDownloaded.value).toBe(true);
+    expect(updater.installFailed.value).toBe(true);
+    expect(updater.showUpdateDialog.value).toBe(true);
+
+    await updater.installDownloadedUpdate();
+    expect(apiMock.downloadUpdate).toHaveBeenCalledOnce();
+    expect(apiMock.installDownloadedUpdate).toHaveBeenCalledTimes(2);
+    expect(updater.updateDownloaded.value).toBe(false);
+    expect(updater.installFailed.value).toBe(false);
   });
 
   it("tracks download progress and stays indeterminate when the backend reports no total", async () => {
@@ -193,8 +216,8 @@ describe("useAppUpdater download attempts", () => {
   });
 });
 
-describe("useAppUpdater reopening the dialog from the toolbar", () => {
-  it("resurfaces the dialog without re-checking while a download is in progress", async () => {
+describe("useAppUpdater one-click toolbar behavior", () => {
+  it("keeps the download dialog closed without re-checking while a download is in progress", async () => {
     const download = deferred<void>();
     apiMock.downloadUpdate.mockReturnValueOnce(download.promise);
     const updater = mountUpdater();
@@ -205,25 +228,29 @@ describe("useAppUpdater reopening the dialog from the toolbar", () => {
     await updater.checkUpdates();
 
     expect(apiMock.checkForUpdates).not.toHaveBeenCalled();
-    expect(updater.showUpdateDialog.value).toBe(true);
+    expect(updater.showUpdateDialog.value).toBe(false);
 
     download.resolve();
     await downloadAttempt;
   });
 
-  it("resurfaces the dialog without re-checking once the update is downloaded and ready to install", async () => {
-    apiMock.downloadUpdate.mockResolvedValueOnce();
-    // Busy at download-completion time so the install step stays pending instead of auto-running.
-    const updater = mountUpdater({ getActiveTaskCount: () => 1 });
-
-    await updater.downloadUpdateInBackground();
+  it("does not reopen a download page while waiting for tasks to finish", async () => {
+    const download = deferred<void>();
+    apiMock.downloadUpdate.mockReturnValueOnce(download.promise);
+    const activeTaskCount = ref(0);
+    const updater = mountUpdater({ getActiveTaskCount: () => activeTaskCount.value });
+    const attempt = updater.downloadUpdateInBackground();
+    await vi.waitFor(() => expect(apiMock.downloadUpdate).toHaveBeenCalledOnce());
+    activeTaskCount.value = 1;
+    download.resolve();
+    await attempt;
     expect(updater.updateDownloaded.value).toBe(true);
     expect(updater.showUpdateDialog.value).toBe(false);
 
     await updater.checkUpdates();
 
     expect(apiMock.checkForUpdates).not.toHaveBeenCalled();
-    expect(updater.showUpdateDialog.value).toBe(true);
+    expect(updater.showUpdateDialog.value).toBe(false);
   });
 
   it("checks again after handing off to the installer helper", async () => {

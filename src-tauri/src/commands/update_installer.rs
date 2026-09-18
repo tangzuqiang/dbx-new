@@ -30,8 +30,6 @@ struct InstallerManifest {
     url: String,
     #[serde(default)]
     sha256: String,
-    #[serde(default, rename = "silentArgs")]
-    silent_args: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -43,7 +41,6 @@ struct DownloadProgress {
 struct ReadyInstaller {
     path: PathBuf,
     version: Version,
-    silent_args: Option<String>,
 }
 
 enum PendingUpdate {
@@ -239,7 +236,7 @@ async fn download_installer(
     std::fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
     let path = cache.join(format!("DBX_{version}_x64-setup.exe"));
     std::fs::write(&path, bytes).map_err(|error| format!("Failed to save installer: {error}"))?;
-    Ok(ReadyInstaller { path, version, silent_args: manifest.silent_args })
+    Ok(ReadyInstaller { path, version })
 }
 
 async fn download_installer_bytes(
@@ -318,7 +315,7 @@ pub fn install_downloaded_update(app: AppHandle, state: tauri::State<'_, Pending
     if ready.version <= current_version()? {
         return Err("Downloaded installer is not newer than this app.".into());
     }
-    launch_installer_after_exit(&app, &ready.path, ready.silent_args.as_deref())?;
+    launch_installer_after_exit(&ready.path)?;
     *pending = Some(PendingUpdate::Installing);
     drop(pending);
     tauri::async_runtime::spawn(async move {
@@ -332,14 +329,45 @@ pub fn install_downloaded_update(app: AppHandle, state: tauri::State<'_, Pending
 }
 
 #[cfg(windows)]
-fn launch_installer_after_exit(app: &AppHandle, installer: &std::path::Path, silent_args: Option<&str>) -> Result<(), String> {
+fn launch_installer_after_exit(installer: &std::path::Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let script = installer.with_extension("ps1");
     std::fs::write(&script, include_str!("update_installer.ps1"))
         .map_err(|error| format!("Failed to write update helper: {error}"))?;
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = std::process::Command::new("powershell.exe");
-    command
+    // WMI creates the helper outside DBX's process tree/job, so closing DBX
+    // cannot tear down the installer/relauncher midway through replacement.
+    let helper_command = format!(
+        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -OldPid {} -Installer \"{}\" -AppExe \"{}\"",
+        script.display(),
+        std::process::id(),
+        installer.display(),
+        exe.display(),
+    );
+    let escaped = helper_command.replace('\'', "''");
+    let mut orphan = std::process::Command::new("powershell.exe");
+    let orphaned = orphan
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &format!(
+                "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{escaped}'}}; if ($result.ReturnValue -ne 0) {{ exit 1 }}"
+            ),
+        ])
+        .creation_flags(0x0800_0000)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if orphaned {
+        return Ok(());
+    }
+    let mut fallback = std::process::Command::new("powershell.exe");
+    fallback
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
         .arg("-OldPid")
@@ -348,19 +376,21 @@ fn launch_installer_after_exit(app: &AppHandle, installer: &std::path::Path, sil
         .arg(installer)
         .arg("-AppExe")
         .arg(exe)
-        .arg("-SilentArgs")
-        .arg(silent_args.unwrap_or("/S /UPDATE /R"))
-        .creation_flags(0x0800_0000 | 0x0000_0008)
+        .creation_flags(0x0800_0000 | 0x0000_0008 | 0x0100_0000)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let _ = app;
-    command.spawn().map_err(|error| format!("Failed to start update helper: {error}"))?;
+    if fallback.spawn().is_err() {
+        // Some Windows jobs disallow breakaway; DETACHED_PROCESS still gives
+        // the helper its own console-free process as a last resort.
+        fallback.creation_flags(0x0800_0000 | 0x0000_0008);
+        fallback.spawn().map_err(|error| format!("Failed to start update helper: {error}"))?;
+    }
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn launch_installer_after_exit(_app: &AppHandle, _installer: &std::path::Path, _silent_args: Option<&str>) -> Result<(), String> {
+fn launch_installer_after_exit(_installer: &std::path::Path) -> Result<(), String> {
     Err("Automatic installer updates are only available on Windows.".into())
 }
 
@@ -374,7 +404,6 @@ mod tests {
             notes: "Update".into(),
             url: "http://111.230.247.111/dbx/DBX_0.6.1_x64-setup.exe".into(),
             sha256: "a".repeat(64),
-            silent_args: Some("/S /UPDATE /R".into()),
         }
     }
 
@@ -395,5 +424,12 @@ mod tests {
     fn uses_rebased_style_single_update_feed() {
         assert_eq!(UPDATE_FEED_URL, "http://111.230.247.111/dbx/latest.json");
         assert!(validate_manifest(&manifest()).is_ok());
+    }
+
+    #[test]
+    fn helper_installs_silently_and_owns_relaunch() {
+        let helper = include_str!("update_installer.ps1");
+        assert!(helper.contains("-ArgumentList @('/S', '/UPDATE')"));
+        assert!(helper.contains("Start-Process -FilePath $AppExe -WorkingDirectory"));
     }
 }

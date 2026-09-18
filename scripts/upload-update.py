@@ -32,7 +32,7 @@ if version and url and sha256:
                 "notes": notes or "功能更新",
                 "url": url,
                 "sha256": sha256,
-                "silentArgs": "/S /UPDATE /R",
+                "silentArgs": "/S /UPDATE",
             },
             handle,
             ensure_ascii=False,

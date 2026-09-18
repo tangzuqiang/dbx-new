@@ -14,9 +14,9 @@ const props = defineProps<{
   updateInfo: UpdateInfo | null;
   updateCheckMessage: string;
   isDownloadingUpdate: boolean;
-  downloadProgress: number | null;
   updateDownloaded: boolean;
   isInstallingUpdate: boolean;
+  installFailed: boolean;
   updateReady: boolean;
   isIgnoringUpdate: boolean;
   activeTaskCount: number;
@@ -26,7 +26,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   "open-latest-release": [];
   "download-in-background": [];
-  "cancel-download": [];
   "install-downloaded": [];
   restart: [];
   "ignore-version": [];
@@ -153,15 +152,12 @@ watch(
               <Loader2 class="h-4 w-4 animate-spin" />
               {{ t("updates.installing") }}
             </Button>
-            <template v-else-if="isDownloadingUpdate">
-              <Button variant="ghost" class="shrink-0" @click="emit('cancel-download')">{{ t("updates.cancelDownload") }}</Button>
-              <Button class="w-52 shrink-0 tabular-nums" disabled>
-                <Loader2 class="h-4 w-4 animate-spin" />
-                {{ t("updates.downloading", { progress: downloadProgress ?? 0 }) }}
-              </Button>
-            </template>
-            <Button v-else-if="updateDownloaded" class="shrink-0" :disabled="activeTaskCount > 0" @click="emit('install-downloaded')">{{ t("updates.exitAndUpdate") }}</Button>
-            <Button v-else class="shrink-0" @click="emit('download-in-background')">{{ t("updates.downloadInBackground") }}</Button>
+            <Button v-else-if="updateDownloaded && installFailed" class="shrink-0" :disabled="activeTaskCount > 0" @click="emit('install-downloaded')">{{ t("updates.retryInstall") }}</Button>
+            <Button v-else-if="isDownloadingUpdate || updateDownloaded" class="shrink-0" disabled>
+              <Loader2 class="h-4 w-4 animate-spin" />
+              {{ t("updates.installing") }}
+            </Button>
+            <Button v-else class="shrink-0" :disabled="activeTaskCount > 0" @click="emit('download-in-background')">{{ t("updates.updateNow") }}</Button>
           </template>
         </template>
         <template v-else>

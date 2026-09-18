@@ -106,6 +106,9 @@ function Publish-Installer([string]$Installer, [string]$Version, [string]$Notes)
     $user = if ($env:UPDATE_USER) { $env:UPDATE_USER } else { "root" }
     $pass = $env:UPDATE_PASS
     $remoteDir = if ($env:UPDATE_DIR) { $env:UPDATE_DIR } else { "/usr/share/nginx/html/dbx" }
+    if ($remoteDir.TrimEnd('/') -ne "/usr/share/nginx/html/dbx") {
+        throw "DBX 更新目录必须是 /usr/share/nginx/html/dbx，当前配置为 $remoteDir"
+    }
 
     if (-not $pass) {
         throw "请先在 scripts/.update-server.env 中填写 UPDATE_PASS（该文件已加入 gitignore）"
@@ -124,7 +127,7 @@ function Publish-Installer([string]$Installer, [string]$Version, [string]$Notes)
         notes      = $Notes
         url        = $feedUrl
         sha256     = $hash
-        silentArgs = "/S /UPDATE /R"
+        silentArgs = "/S /UPDATE"
     }
     $json = ($manifestObj | ConvertTo-Json -Compress)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -152,11 +155,24 @@ function Publish-Installer([string]$Installer, [string]$Version, [string]$Notes)
         if ([int]$head.StatusCode -ge 400) {
             throw "HTTP $($head.StatusCode)"
         }
+        if ($head.Headers['Content-Type'] -match 'text/html' -or [long]$head.Headers['Content-Length'] -ne $exe.Length) {
+            throw "服务器返回的不是预期安装包（Content-Type=$($head.Headers['Content-Type'])，Content-Length=$($head.Headers['Content-Length'])）"
+        }
         Write-Host "安装包地址可访问：$checkUrl"
     } catch {
         throw "安装包已上传，但 HTTP 无法下载 $checkUrl ：$($_.Exception.Message)"
     }
-    Write-Host "清单地址：http://$hostName/dbx/latest.json"
+    $manifestUrl = "http://$hostName/dbx/latest.json"
+    try {
+        $manifestResponse = Invoke-WebRequest -Uri $manifestUrl -UseBasicParsing -TimeoutSec 20
+        $published = $manifestResponse.Content | ConvertFrom-Json
+        if ($published.version -ne $Version -or $published.url -ne $feedUrl -or $published.sha256 -ne $hash) {
+            throw "服务器清单与本次安装包不一致"
+        }
+        Write-Host "清单地址：$manifestUrl"
+    } catch {
+        throw "安装包已上传，但清单不可用 $manifestUrl ：$($_.Exception.Message)"
+    }
 }
 
 function Wait-ScriptWindow {

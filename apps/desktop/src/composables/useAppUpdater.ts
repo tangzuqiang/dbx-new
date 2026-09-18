@@ -1,5 +1,6 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { watch } from "vue";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { useToast } from "@/composables/useToast";
 import * as api from "@/lib/backend/api";
@@ -119,6 +120,7 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
   const downloadProgress = ref<number | null>(0);
   const updateDownloaded = ref(false);
   const isInstallingUpdate = ref(false);
+  const installFailed = ref(false);
   const updateReady = ref(false);
   const isIgnoringUpdate = ref(false);
   const activeTaskCount = computed(() => Math.max(0, Math.trunc(options.getActiveTaskCount?.() ?? 0)));
@@ -137,10 +139,11 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
 
   async function checkUpdates(options: { silent?: boolean } = {}) {
     if (checkingUpdates.value) return;
-    // The toolbar icon reuses this as its click handler. If a download/install is already
-    // in flight or finished, just resurface the dialog instead of hitting the network again.
-    if (!options.silent && (isDownloadingUpdate.value || updateDownloaded.value || updateReady.value)) {
-      showUpdateDialog.value = true;
+    // One-click updates run without a separate download dialog.
+    if (!options.silent && (isDownloadingUpdate.value || isInstallingUpdate.value || updateDownloaded.value || updateReady.value)) {
+      if (isDownloadingUpdate.value) toast(t("updates.downloading", { progress: downloadProgress.value ?? 0 }), 3000);
+      else if (installFailed.value) showUpdateDialog.value = true;
+      else if (updateDownloaded.value) blockUpdateForActiveTasks();
       return;
     }
     checkingUpdates.value = true;
@@ -221,8 +224,9 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
       openLatestRelease();
       return;
     }
-    // Starting the download never has to wait on active work — only installing
-    // (file replacement) is disruptive, so that guard applies at install time instead.
+    // A single click now commits to closing the app and installing once the
+    // package is downloaded. Do not begin that flow while work is active.
+    if (blockUpdateForActiveTasks()) return;
     showUpdateDialog.value = false;
     const attempt = ++activeDownloadAttempt;
     isDownloadingUpdate.value = true;
@@ -248,16 +252,10 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
       // checks isDownloadingUpdate) can evaluate freely instead of treating us as still busy.
       isDownloadingUpdate.value = false;
       if (shouldBlockAppUpdate(activeTaskCount.value)) {
-        // Matches the pre-refactor behavior: installing waits for active work to finish, but
-        // unlike before, only installing waits — the download itself never blocked on it.
-        toast(t("updates.readyToInstall", { version: latestVersion ? tagVersion(latestVersion) : "" }), 10000, {
-          label: t("updates.installNow"),
-          onClick: () => {
-            void installDownloadedUpdate();
-          },
-        });
+        // Work may have started while downloading; continue automatically
+        // as soon as it finishes, without requiring another click.
+        blockUpdateForActiveTasks();
       } else {
-        // Restores the pre-refactor auto-install-when-idle behavior for the install step.
         await installDownloadedUpdate();
       }
     } catch (e: any) {
@@ -283,6 +281,7 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
     try {
       await api.installDownloadedUpdate();
       updateDownloaded.value = false;
+      installFailed.value = false;
       // The Windows installer helper exits DBX, installs, and relaunches it.
       updateReady.value = false;
     } finally {
@@ -310,9 +309,15 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
         });
       }
     } catch (e: any) {
+      installFailed.value = true;
+      showUpdateDialog.value = true;
       toast(t("updates.installFailed", { error: e?.message || String(e) }), 5000);
     }
   }
+
+  watch(activeTaskCount, (count) => {
+    if (count === 0 && updateDownloaded.value && !isInstallingUpdate.value) void installDownloadedUpdate();
+  });
 
   async function restartApp() {
     if (!isTauriRuntime()) return;
@@ -354,6 +359,7 @@ export function useAppUpdater(options: UseAppUpdaterOptions = {}) {
     downloadProgress,
     updateDownloaded,
     isInstallingUpdate,
+    installFailed,
     updateReady,
     isIgnoringUpdate,
     activeTaskCount,

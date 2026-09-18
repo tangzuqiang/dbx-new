@@ -1,8 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][int]$OldPid,
     [Parameter(Mandatory=$true)][string]$Installer,
-    [Parameter(Mandatory=$true)][string]$AppExe,
-    [string]$SilentArgs = '/S /UPDATE /R'
+    [Parameter(Mandatory=$true)][string]$AppExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,19 +19,21 @@ try {
     }
     if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw 'Installer is missing' }
     Log "Installing $Installer"
-    $allowedArgs = @('/S', '/UPDATE', '/R')
-    $installArgs = @($SilentArgs -split '\s+' | Where-Object { $_ })
-    if ($installArgs.Count -eq 0 -or @($installArgs | Where-Object { $_ -notin $allowedArgs }).Count -gt 0) { throw 'Invalid installer arguments in update manifest' }
-    $process = Start-Process -FilePath $Installer -ArgumentList $installArgs -PassThru -Wait -WindowStyle Hidden
+    # /R would let NSIS start DBX itself; this independent helper owns relaunch.
+    $process = Start-Process -FilePath $Installer -ArgumentList @('/S', '/UPDATE') -PassThru -Wait -WindowStyle Hidden
     if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
     if (-not (Test-Path -LiteralPath $AppExe -PathType Leaf)) { throw "Updated DBX executable is missing: $AppExe" }
-    if (Get-Process -Name 'DBX' -ErrorAction SilentlyContinue) {
-        Log 'DBX was restarted by the installer'
-        exit 0
-    }
     Log "Restarting $AppExe"
-    Start-Process -FilePath $AppExe
+    Start-Process -FilePath $AppExe -WorkingDirectory (Split-Path -Parent $AppExe)
 } catch {
     Log "Update failed: $($_.Exception.Message)"
+    if (Test-Path -LiteralPath $AppExe -PathType Leaf) {
+        try {
+            Start-Process -FilePath $AppExe -WorkingDirectory (Split-Path -Parent $AppExe)
+            Log 'Restarted DBX after update failure'
+        } catch {
+            Log "Failed to restart DBX: $($_.Exception.Message)"
+        }
+    }
     exit 1
 }

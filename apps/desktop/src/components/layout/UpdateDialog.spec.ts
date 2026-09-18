@@ -19,6 +19,7 @@ interface DialogState {
   downloadProgress: number | null;
   updateDownloaded: boolean;
   isInstallingUpdate: boolean;
+  installFailed: boolean;
   updateReady: boolean;
   isIgnoringUpdate: boolean;
 }
@@ -37,6 +38,7 @@ async function mountDialog(activeTaskCount: number, initialState: Partial<Dialog
     downloadProgress: 0,
     updateDownloaded: false,
     isInstallingUpdate: false,
+    installFailed: false,
     updateReady: false,
     isIgnoringUpdate: false,
     ...initialState,
@@ -54,9 +56,10 @@ async function mountDialog(activeTaskCount: number, initialState: Partial<Dialog
           try {
             await installDownloaded();
             state.updateDownloaded = false;
+            state.installFailed = false;
             state.updateReady = true;
           } catch {
-            // The real updater reports the error but retains the downloaded package for retry.
+            state.installFailed = true;
           } finally {
             state.isInstallingUpdate = false;
           }
@@ -86,6 +89,7 @@ async function mountDialog(activeTaskCount: number, initialState: Partial<Dialog
             downloadProgress: state.downloadProgress,
             updateDownloaded: state.updateDownloaded,
             isInstallingUpdate: state.isInstallingUpdate,
+            installFailed: state.installFailed,
             updateReady: state.updateReady,
             isIgnoringUpdate: state.isIgnoringUpdate,
             activeTaskCount,
@@ -110,15 +114,11 @@ function buttonWithText(text: string): HTMLButtonElement | undefined {
 }
 
 function downloadButton(): HTMLButtonElement | undefined {
-  return buttonWithText("Download in Background");
-}
-
-function cancelDownloadButton(): HTMLButtonElement | undefined {
-  return buttonWithText("Cancel Download");
+  return Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Update");
 }
 
 function installDownloadedButton(): HTMLButtonElement | undefined {
-  return buttonWithText("Exit & Update");
+  return buttonWithText("Retry Installation");
 }
 
 async function pressEscape() {
@@ -137,11 +137,11 @@ afterEach(() => {
 });
 
 describe("UpdateDialog active task guard", () => {
-  it("shows the task warning but still allows starting a background download while work is running", async () => {
+  it("shows the task warning and blocks one-click update while work is running", async () => {
     await mountDialog(2);
 
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("2");
-    expect(downloadButton()?.disabled).toBe(false);
+    expect(downloadButton()?.disabled).toBe(true);
   });
 
   it("allows installation after all tasks finish", async () => {
@@ -175,36 +175,26 @@ describe("UpdateDialog active task guard", () => {
     expect(buttonWithText("Open Release")).toBeDefined();
   });
 
-  it("retains the downloaded update and enables installation only after tasks finish", async () => {
-    await mountDialog(1, { updateDownloaded: true, downloadProgress: 100 });
+  it("offers retry only after a failed installation and when tasks are idle", async () => {
+    await mountDialog(1, { updateDownloaded: true, installFailed: true });
 
     expect(downloadButton()).toBeUndefined();
     expect(installDownloadedButton()?.disabled).toBe(true);
 
     for (const app of mountedApps.splice(0)) app.unmount();
     document.body.innerHTML = "";
-    await mountDialog(0, { updateDownloaded: true, downloadProgress: 100 });
+    await mountDialog(0, { updateDownloaded: true, installFailed: true });
 
     expect(installDownloadedButton()?.disabled).toBe(false);
   });
 });
 
-describe("UpdateDialog download progress", () => {
-  it("keeps the downloading button at a fixed width as progress changes", async () => {
-    const { state } = await mountDialog(0, { isDownloadingUpdate: true, downloadProgress: 9 });
-
-    expect(buttonWithText("Downloading 9%")?.classList.contains("w-52")).toBe(true);
-
-    state.downloadProgress = 100;
-    await flushDialog();
-
-    expect(buttonWithText("Downloading 100%")?.classList.contains("w-52")).toBe(true);
-  });
-
-  it("falls back to 0% while the download size is unknown", async () => {
+describe("UpdateDialog one-click flow", () => {
+  it("does not show a download progress page or cancellation control", async () => {
     await mountDialog(0, { isDownloadingUpdate: true, downloadProgress: null });
-
-    expect(buttonWithText("Downloading 0%")).toBeDefined();
+    expect(buttonWithText("Downloading 0%")).toBeUndefined();
+    expect(buttonWithText("Cancel Download")).toBeUndefined();
+    expect(buttonWithText("Installing update")).toBeDefined();
   });
 });
 
@@ -238,15 +228,6 @@ describe("UpdateDialog close protection", () => {
     expect(state.open).toBe(false);
   });
 
-  it("cancels the download only when the explicit Cancel Download button is clicked", async () => {
-    const { cancelDownload } = await mountDialog(0, { isDownloadingUpdate: true, downloadProgress: 42 });
-
-    cancelDownloadButton()?.click();
-    await flushDialog();
-
-    expect(cancelDownload).toHaveBeenCalledOnce();
-  });
-
   it("allows closing while a downloaded update is idle", async () => {
     const { state } = await mountDialog(0, { updateDownloaded: true, downloadProgress: 100 });
 
@@ -275,7 +256,7 @@ describe("UpdateDialog close protection", () => {
           rejectInstall = reject;
         }),
     );
-    const { state } = await mountDialog(0, { updateDownloaded: true }, installDownloaded);
+    const { state } = await mountDialog(0, { updateDownloaded: true, installFailed: true }, installDownloaded);
 
     installDownloadedButton()?.click();
     await flushDialog();
@@ -294,7 +275,7 @@ describe("UpdateDialog close protection", () => {
     const installDownloaded = vi.fn(async () => {
       throw new Error("install failed");
     });
-    const { state, downloadInBackground } = await mountDialog(0, { updateDownloaded: true }, installDownloaded);
+    const { state, downloadInBackground } = await mountDialog(0, { updateDownloaded: true, installFailed: true }, installDownloaded);
 
     installDownloadedButton()?.click();
     await flushDialog();
@@ -310,7 +291,7 @@ describe("UpdateDialog close protection", () => {
 
   it("allows dismissing after a successful install while restart remains available", async () => {
     const installDownloaded = vi.fn(async () => {});
-    const { state, downloadInBackground } = await mountDialog(0, { updateDownloaded: true }, installDownloaded);
+    const { state, downloadInBackground } = await mountDialog(0, { updateDownloaded: true, installFailed: true }, installDownloaded);
 
     installDownloadedButton()?.click();
     await flushDialog();
