@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][int]$OldPid,
     [Parameter(Mandatory=$true)][string]$Installer,
-    [Parameter(Mandatory=$true)][string]$AppExe
+    [Parameter(Mandatory=$true)][string]$AppExe,
+    [Parameter(Mandatory=$true)][string]$LaunchMarker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,7 @@ function Log([string]$Message) {
 }
 
 try {
+    Set-Content -LiteralPath $LaunchMarker -Value $PID -Encoding ascii
     Log "Waiting for DBX process $OldPid to exit"
     $deadline = (Get-Date).AddSeconds(90)
     while (Get-Process -Id $OldPid -ErrorAction SilentlyContinue) {

@@ -118,7 +118,8 @@ async fn fetch_manifest(_source: UpdateDownloadSource) -> Result<InstallerManife
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| format!("Failed to check updates: {error}"))?;
-    let manifest = response.json::<InstallerManifest>().await.map_err(|error| format!("Invalid update manifest: {error}"))?;
+    let manifest =
+        response.json::<InstallerManifest>().await.map_err(|error| format!("Invalid update manifest: {error}"))?;
     manifest_version(&manifest)?;
     validate_manifest(&manifest)?;
     Ok(manifest)
@@ -335,14 +336,46 @@ fn launch_installer_after_exit(installer: &std::path::Path) -> Result<(), String
     std::fs::write(&script, include_str!("update_installer.ps1"))
         .map_err(|error| format!("Failed to write update helper: {error}"))?;
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    // WMI creates the helper outside DBX's process tree/job, so closing DBX
-    // cannot tear down the installer/relauncher midway through replacement.
+    let launch_marker = installer.with_extension(format!("{}.started", std::process::id()));
+    let _ = std::fs::remove_file(&launch_marker);
+
+    // Prefer an explicitly detached child. CREATE_BREAKAWAY_FROM_JOB is the
+    // important flag for packaged Windows apps: without it, exiting DBX can
+    // tear down the PowerShell helper before it ever reaches the installer.
+    let mut helper = std::process::Command::new("powershell.exe");
+    helper
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .arg("-OldPid")
+        .arg(std::process::id().to_string())
+        .arg("-Installer")
+        .arg(installer)
+        .arg("-AppExe")
+        .arg(&exe)
+        .arg("-LaunchMarker")
+        .arg(&launch_marker)
+        .creation_flags(0x0800_0000 | 0x0000_0008 | 0x0100_0000)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match helper.spawn() {
+        Ok(_) => return wait_for_update_helper_start(&launch_marker),
+        Err(error) if error.raw_os_error() != Some(5) => {
+            return Err(format!("Failed to start update helper: {error}"));
+        }
+        Err(_) => {}
+    }
+
+    // Some hosts disallow BREAKAWAY_FROM_JOB. WMI is the independent-process
+    // fallback, but its successful return only means process creation was
+    // requested. The launch marker below verifies that our script really ran.
     let helper_command = format!(
-        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -OldPid {} -Installer \"{}\" -AppExe \"{}\"",
+        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -OldPid {} -Installer \"{}\" -AppExe \"{}\" -LaunchMarker \"{}\"",
         script.display(),
         std::process::id(),
         installer.display(),
         exe.display(),
+        launch_marker.display(),
     );
     let escaped = helper_command.replace('\'', "''");
     let mut orphan = std::process::Command::new("powershell.exe");
@@ -364,29 +397,21 @@ fn launch_installer_after_exit(installer: &std::path::Path) -> Result<(), String
         .status()
         .is_ok_and(|status| status.success());
     if orphaned {
-        return Ok(());
+        return wait_for_update_helper_start(&launch_marker);
     }
-    let mut fallback = std::process::Command::new("powershell.exe");
-    fallback
-        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .arg("-OldPid")
-        .arg(std::process::id().to_string())
-        .arg("-Installer")
-        .arg(installer)
-        .arg("-AppExe")
-        .arg(exe)
-        .creation_flags(0x0800_0000 | 0x0000_0008 | 0x0100_0000)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if fallback.spawn().is_err() {
-        // Some Windows jobs disallow breakaway; DETACHED_PROCESS still gives
-        // the helper its own console-free process as a last resort.
-        fallback.creation_flags(0x0800_0000 | 0x0000_0008);
-        fallback.spawn().map_err(|error| format!("Failed to start update helper: {error}"))?;
+    Err("Failed to create an independent update helper process.".into())
+}
+
+#[cfg(windows)]
+fn wait_for_update_helper_start(marker: &std::path::Path) -> Result<(), String> {
+    for _ in 0..50 {
+        if marker.is_file() {
+            let _ = std::fs::remove_file(marker);
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    Err("The update helper did not start; DBX will remain open.".into())
 }
 
 #[cfg(not(windows))]
@@ -431,5 +456,6 @@ mod tests {
         let helper = include_str!("update_installer.ps1");
         assert!(helper.contains("-ArgumentList @('/S', '/UPDATE')"));
         assert!(helper.contains("Start-Process -FilePath $AppExe -WorkingDirectory"));
+        assert!(helper.contains("Set-Content -LiteralPath $LaunchMarker"));
     }
 }
