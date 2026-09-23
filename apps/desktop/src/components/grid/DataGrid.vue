@@ -6304,6 +6304,7 @@ const activeCellDetail = computed(() => {
 });
 
 const canShowMongoJsonPreview = computed(() => props.databaseType === "mongodb" && !!props.result.mongo_documents && props.result.mongo_documents.length === props.result.rows.length);
+const showMongoJsonPreviewAction = computed(() => props.databaseType === "mongodb");
 const mongoJsonPreviewOpen = computed(() => showMongoJsonPreview.value && canShowMongoJsonPreview.value);
 const activeMongoJsonDocument = computed(() => {
   if (!mongoJsonPreviewOpen.value) return undefined;
@@ -12527,7 +12528,7 @@ function openGridSnapshot() {
     @focusin="onGridFocusIn"
   >
     <CustomContextMenu :items="currentGridContextMenuItems" @open="onGridContextMenuOpen" @close="onGridContextMenuClose" v-slot="{ onContextMenu }">
-      <div v-if="hasData || canShowWhereSearch" class="flex-1 flex flex-col overflow-hidden" @contextmenu="onContextMenu">
+      <div v-if="hasData || canShowWhereSearch || showDataGridTopbar" class="flex-1 flex flex-col overflow-hidden" @contextmenu="onContextMenu">
         <!-- Search bar -->
         <!-- Leave real vertical space around the 28px controls instead of fitting them against the border. -->
         <div ref="dataGridTopbarRef" v-if="showDataGridTopbar" class="data-grid-topbar-shell flex h-8 min-w-0 shrink-0 items-center border-b bg-muted/20">
@@ -12638,13 +12639,14 @@ function openGridSnapshot() {
                   {{ t("grid.keylessEditWarningHint") }}
                 </TooltipContent>
               </Tooltip>
-              <Tooltip v-if="canShowMongoJsonPreview">
+              <Tooltip v-if="showMongoJsonPreviewAction">
                 <TooltipTrigger as-child>
                   <Button
                     variant="ghost"
                     size="sm"
                     :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compactDataGridToolbar ? 'data-grid-topbar-action-button--compact' : '', mongoJsonPreviewOpen ? 'text-primary bg-primary/10 hover:bg-primary/15' : '']"
                     :aria-pressed="mongoJsonPreviewOpen"
+                    :disabled="!canShowMongoJsonPreview"
                     @click="toggleMongoJsonPreview"
                   >
                     <Code2 class="data-grid-topbar-action-icon w-3 h-3" />
@@ -12662,11 +12664,11 @@ function openGridSnapshot() {
             </template>
 
             <template #navigation>
-              <Tooltip v-if="props.result.columns.length">
+              <Tooltip>
                 <TooltipTrigger as-child>
                   <Popover v-model:open="goToColumnOpen">
                     <PopoverTrigger as-child>
-                      <Button variant="ghost" size="sm" :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compactDataGridToolbar ? 'data-grid-topbar-action-button--compact' : '', goToColumnOpen ? 'text-primary bg-primary/10' : '']">
+                      <Button variant="ghost" size="sm" :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compactDataGridToolbar ? 'data-grid-topbar-action-button--compact' : '', goToColumnOpen ? 'text-primary bg-primary/10' : '']" :disabled="props.result.columns.length === 0">
                         <Columns3 class="data-grid-topbar-action-icon w-3 h-3" />
                         <span
                           class="data-grid-topbar-action-label"

@@ -2077,8 +2077,50 @@ function handleElasticsearchIndexCleared(detail: ElasticsearchIndexClearedDetail
 }
 
 let unsubscribeElasticsearchIndexCleared: (() => void) | undefined;
+let documentBrowserMounted = false;
+
+watch(
+  () => [props.connectionId, props.database, props.collection, props.databaseType] as const,
+  async (context, previousContext) => {
+    if (!documentBrowserMounted || context.every((value, index) => value === previousContext[index])) return;
+
+    page.value = 0;
+    selectedIdx.value = null;
+    isEditing.value = false;
+    isNew.value = false;
+    filterInput.value = "";
+    sortInput.value = "";
+    documents.value = [];
+    copyDocuments.value = [];
+    gridRows.value = [];
+    lastGridColumns.value = [];
+    lastGridColumnTypes.value = [];
+    cancelElasticsearchCount();
+    elasticsearchCountKey = null;
+    elasticsearchExactTotal = undefined;
+    elasticsearchPaginationLowerBound = undefined;
+    elasticsearchPageCursors.value = [undefined];
+    elasticsearchHasNextCursor.value = false;
+    total.value = undefined;
+    totalIsExact.value = true;
+    paginationTotal.value = undefined;
+    resetDynamoDbPagination();
+    resetDynamoDbExactCount();
+    dataGridRef.value?.resetInfiniteScrollState?.();
+
+    try {
+      await connectionStore.ensureConnected(props.connectionId);
+    } catch (e) {
+      console.warn("[DBX] ensureConnected failed for", props.connectionId, e);
+    }
+    await loadDynamoDbTableDescription();
+    void loadElasticsearchMappingFields();
+    void load({ page: 0, offset: 0 });
+  },
+);
 
 onMounted(async () => {
+  documentBrowserMounted = true;
   window.addEventListener("pointerdown", handleDocumentBrowserPointerDown, true);
   unsubscribeElasticsearchIndexCleared = subscribeElasticsearchIndexCleared(handleElasticsearchIndexCleared);
   try {
@@ -2094,6 +2136,7 @@ onMounted(async () => {
   void nextTick(resizeDocumentQueryInputs);
 });
 onBeforeUnmount(() => {
+  documentBrowserMounted = false;
   window.removeEventListener("pointerdown", handleDocumentBrowserPointerDown, true);
   unsubscribeElasticsearchIndexCleared?.();
   unsubscribeElasticsearchIndexCleared = undefined;
